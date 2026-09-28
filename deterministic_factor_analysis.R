@@ -9,7 +9,8 @@
 #     или вообще R-функция. Многоуровневые модели (подстановка подмоделей).
 #   * Методы элиминирования:
 #       chain        — цепных подстановок (любая модель, задаётся порядок)
-#       abs_diff     — абсолютных разниц (мультипликативные модели)
+#       abs_diff     — абсолютных разниц (мультипликативные, смешанные, аддитивные,
+#                      любые модели-выражения; формулы в разностях)
 #       rel_diff     — относительных разниц (мультипликативные модели)
 #       index        — индексный (мультипликативные и кратные модели x^p)
 #       integral     — интегральный (любая дифференцируемая модель)
@@ -39,6 +40,9 @@
 #    Rscript deterministic_factor_analysis.R --demo=all           # все демо
 #    Rscript deterministic_factor_analysis.R --data=my.csv --model="Y = a*b*c"
 #    Rscript deterministic_factor_analysis.R --config=my_config.R # свой конфиг
+#    Rscript deterministic_factor_analysis.R --gui                # окно настроек
+#  Из RStudio / RGui: source("deterministic_factor_analysis.R", encoding = "UTF-8")
+#    — откроется окно настроек (CONFIG$gui = TRUE), или вызовите dfa_gui()
 #    Другие ключи: --out=папка --order=a,b,c --method=integral --compare=chain
 #                  --group=столбец_групп --period=столбец_периодов
 #  Из R:
@@ -54,6 +58,11 @@
 # 0. НАСТРОЙКИ (CONFIG) — меняйте здесь или передайте свой список в dfa_run()
 # =============================================================================
 CONFIG <- list(
+
+  # ---- Режим -----------------------------------------------------------------
+  # gui = TRUE: при source() в RStudio / RGui открывается окно настроек (dfa_gui).
+  # Из командной строки окно открывается ключом --gui.
+  gui        = TRUE,
 
   # ---- Источник данных ------------------------------------------------------
   # demo      : имя демо-набора (см. dfa_demo()); используется, если data и
@@ -216,6 +225,13 @@ dfa_fmt <- function(x, digits = 2, cfg = NULL, sign = FALSE) {
     out[ok] <- s
   }
   out
+}
+# Число с 6 значащими цифрами без лишних нулей: 12 800; 0,02; -1 014
+dfa_num <- function(x, cfg = NULL) {
+  out <- formatC(signif(x, 6), format = "fg", digits = 6, big.mark = cfg$big_mark %||% " ",
+                 decimal.mark = cfg$decimal_mark %||% ",")
+  out <- trimws(out)
+  ifelse(x < 0, paste0("(", out, ")"), out)
 }
 dfa_pct <- function(x, cfg = NULL, sign = FALSE)
   paste0(dfa_fmt(x, cfg$pct_digits %||% 2, cfg, sign), ifelse(is.finite(x), "%", ""))
@@ -729,24 +745,70 @@ dfa_chain <- function(mdl, x0, x1, ord, cfg) {
 }
 
 # ---- 6.2 Абсолютных разниц ---------------------------------------------------
+# Мультипликативная модель: ΔY(x_i) = x1_1 × ... × Δx_i × x0_{i+1} × ...
+# Смешанная/аддитивная/любая модель-выражение: для фактора, входящего в модель
+# линейно, ΔY(x_i) = Δx_i × ∂Y/∂x_i, где уже подставленные факторы взяты на
+# отчётном уровне (…1), ещё не подставленные — на базисном (…0).
+# Например, PR = Q*(P - V) - F:  ΔQ×(P0 − V0);  Q1×ΔP;  −Q1×ΔV;  −ΔF.
+# Для нелинейно входящих факторов (знаменатель, степень, log …) влияние
+# считается как разность значений модели Y(…x_i1…) − Y(…x_i0…).
+# Сумма влияний всегда равна ΔY, результат совпадает с цепными подстановками.
 dfa_abs_diff <- function(mdl, x0, x1, ord, cfg) {
-  if (!identical(mdl$type, "multiplicative") || any(abs(mdl$pp$p - 1) > 1e-12))
-    return(list(effects = NULL, note = paste(
-      "Применим к мультипликативным моделям Y = a·b·c... Для других моделей",
-      "расчёт в разностях совпадает с цепными подстановками — используйте chain.")))
-  c0 <- mdl$pp$c
+  if (is.null(mdl$expr))
+    return(list(effects = NULL, note = "Модель задана функцией-чёрным ящиком — формулы в разностях построить нельзя, используйте chain."))
+  sfx <- function(v, s) if (length(v)) paste0(v, s) else character(0)
+  pretty_expr <- function(e) gsub(" \\* ", " × ", paste(deparse(e, width.cutoff = 500), collapse = ""))
   eff <- stats::setNames(numeric(length(ord)), ord)
-  txt <- character(0)
+  txt <- coef <- stats::setNames(character(length(ord)), ord)
+  coefv <- stats::setNames(rep(NA_real_, length(ord)), ord)
+  kind <- stats::setNames(character(length(ord)), ord)
+  pure_mult <- identical(mdl$type, "multiplicative") && all(abs(mdl$pp$p - 1) < 1e-12)
   for (i in seq_along(ord)) {
-    before <- ord[seq_len(i - 1)]; after <- ord[-seq_len(i)]
-    eff[ord[i]] <- c0 * prod(x1[before]) * (x1[ord[i]] - x0[ord[i]]) * prod(x0[after])
-    sfx <- function(v, s) if (length(v)) paste0(v, s) else character(0)
-    txt[ord[i]] <- paste0("ΔY(", ord[i], ") = ",
-      paste(c(if (c0 != 1) format(c0), sfx(before, "1"), paste0("Δ", ord[i]), sfx(after, "0")),
-            collapse = " × "))
+    f <- ord[i]; before <- ord[seq_len(i - 1)]; after <- ord[-seq_len(i)]
+    xm <- x0; xm[before] <- x1[before]            # состояние перед подстановкой f
+    dx <- x1[f] - x0[f]
+    if (pure_mult) {
+      c0 <- mdl$pp$c
+      coefv[f] <- c0 * prod(x1[before]) * prod(x0[after])
+      eff[f] <- coefv[f] * dx
+      txt[f] <- paste(c(if (c0 != 1) format(c0), sfx(before, "1"), paste0("Δ", f), sfx(after, "0")), collapse = " × ")
+      kind[f] <- "линейный"
+      next
+    }
+    d <- tryCatch(stats::D(mdl$expr, f), error = function(e) NULL)
+    linear <- !is.null(d) && !(f %in% all.vars(d))
+    if (linear) {
+      coefv[f] <- eval(d, as.list(xm), mdl$env)
+      eff[f] <- coefv[f] * dx
+      map <- c(stats::setNames(lapply(sfx(before, "1"), as.name), before),
+               stats::setNames(lapply(sfx(after, "0"), as.name), after))
+      dd <- if (length(map)) do.call(substitute, list(d, map)) else d
+      const_d <- if (!length(intersect(all.vars(dd), c(mdl$factors, sfx(mdl$factors, "0"), sfx(mdl$factors, "1")))))
+                   tryCatch(eval(dd, mdl$constants), error = function(e) NA) else NA
+      de <- pretty_expr(dd)
+      txt[f] <- if (isTRUE(const_d == 1)) paste0("Δ", f)
+                else if (isTRUE(const_d == -1)) paste0("−Δ", f)
+                else if (is.name(dd) || (startsWith(de, "(") && endsWith(de, ")"))) paste0("Δ", f, " × ", de)
+                else paste0("Δ", f, " × (", de, ")")
+      kind[f] <- "линейный"
+    } else {
+      xa <- xm; xa[f] <- x1[f]
+      eff[f] <- mdl$fn(xa) - mdl$fn(xm)
+      ctx <- paste(c(sfx(before, "1"), sfx(after, "0")), collapse = ", ")
+      txt[f] <- sprintf("Y(%s1%s) − Y(%s0%s)", f, if (nzchar(ctx)) paste0("; ", ctx) else "", f,
+                        if (nzchar(ctx)) paste0("; ", ctx) else "")
+      kind[f] <- "нелинейный"
+    }
   }
-  list(effects = eff[mdl$factors], details = data.frame(factor = ord, formula = txt[ord],
-       effect = eff[ord], stringsAsFactors = FALSE), note = "Формулы: см. details")
+  nl <- ord[kind[ord] == "нелинейный"]
+  note <- if (!length(nl)) "Все факторы входят в модель линейно — расчёт в абсолютных разницах точный."
+          else paste0("Факторы, входящие нелинейно (", paste(nl, collapse = ", "),
+                      "), рассчитаны как разность значений модели.")
+  list(effects = eff[mdl$factors],
+       details = data.frame(factor = ord, formula = paste0("ΔY(", ord, ") = ", txt[ord]),
+                            delta = x1[ord] - x0[ord], coef = coefv[ord], kind = kind[ord],
+                            effect = eff[ord], stringsAsFactors = FALSE),
+       note = note)
 }
 
 # ---- 6.3 Относительных разниц ------------------------------------------------
@@ -1132,8 +1194,10 @@ dfa_pair_report <- function(r, cfg) {
   }
   if ("abs_diff" %in% r$ok_methods) {
     add("6) Метод абсолютных разниц — формулы:")
-    add(paste0("  ", r$methods$abs_diff$details$formula, " = ",
-               dfa_fmt(r$methods$abs_diff$details$effect, cfg$digits, cfg, TRUE)), "")
+    ad <- r$methods$abs_diff$details
+    num <- ifelse(is.finite(ad$coef),
+                  paste0(" = ", dfa_num(ad$delta, cfg), " × ", dfa_num(ad$coef, cfg)), "")
+    add(paste0("  ", ad$formula, num, " = ", dfa_fmt(ad$effect, cfg$digits, cfg, TRUE)), "")
   }
   if ("proportional" %in% r$ok_methods && !is.null(r$methods$proportional$details)) {
     add("7) Пропорциональное деление — распределение влияния сумм:")
@@ -1753,18 +1817,633 @@ print.dfa_pair <- function(x, ...) { cat(dfa_pair_report(x, CONFIG), sep = "\n")
 
 
 # =============================================================================
-# 12. ЗАПУСК ИЗ КОМАНДНОЙ СТРОКИ
+# 12. КОНФИГ: СОХРАНЕНИЕ / ЗАГРУЗКА / РЕДАКТИРОВАНИЕ
+# =============================================================================
+
+# Записывает конфиг в R-файл вида  CONFIG$model <- "Y = a*b"  (читается --config=)
+dfa_config_write <- function(cfg, path = "dfa_config.R", include_data = TRUE) {
+  L <- c("# Конфиг детерминированного факторного анализа",
+         paste("# Сохранён:", format(Sys.time(), "%Y-%m-%d %H:%M")),
+         "# Запуск: Rscript deterministic_factor_analysis.R --config=<этот файл>",
+         "#     или dfa_gui(dfa_config_read(\"<этот файл>\")) из R", "")
+  for (nm in names(CONFIG)) {
+    if (nm == "data" && (!include_data || is.null(cfg$data))) { L <- c(L, "CONFIG$data <- NULL"); next }
+    v <- cfg[[nm]]
+    txt <- paste(deparse(v, width.cutoff = 100, control = c("keepNA", "keepInteger", "niceNames", "showAttributes")),
+                 collapse = "\n")
+    L <- c(L, paste0("CONFIG$", nm, " <- ", txt))
+  }
+  con <- file(path, "w", encoding = "UTF-8"); on.exit(close(con))
+  writeLines(L, con)
+  invisible(path)
+}
+
+# Читает конфиг-файл (R-код, меняющий CONFIG) и возвращает полный список настроек
+dfa_config_read <- function(path, base = CONFIG) {
+  e <- new.env(parent = globalenv()); e$CONFIG <- base
+  sys.source(path, envir = e, keep.source = FALSE, toplevel.env = e)
+  utils::modifyList(base, e$CONFIG, keep.null = TRUE)
+}
+
+# Запасной вариант без Tk: конфиг открывается во встроенном текстовом редакторе R
+# (RGui / RStudio / любой editor из options("editor")), после сохранения возвращается.
+dfa_edit_config <- function(cfg = CONFIG) {
+  tmp <- tempfile("dfa_config_", fileext = ".R")
+  dfa_config_write(cfg, tmp, include_data = FALSE)
+  utils::file.edit(tmp)
+  if (interactive()) invisible(readline("Отредактируйте файл, сохраните его и нажмите Enter... "))
+  out <- dfa_config_read(tmp, cfg)
+  out$data <- cfg$data
+  out
+}
+
+
+# =============================================================================
+# 13. GUI — ОКНО НАСТРОЕК (tcltk, входит в базовый R)
+#     dfa_gui()                     — открыть окно с настройками по умолчанию
+#     dfa_gui(dfa_config_read(f))   — открыть с сохранённым конфигом
+#     Rscript deterministic_factor_analysis.R --gui [--config=файл]
+#     После закрытия окна: DFA_CONFIG (настройки) и DFA_RESULT (последний расчёт)
+#     доступны в глобальном окружении; функция возвращает их списком.
+# =============================================================================
+
+# Описание всех полей окна: вкладка, тип виджета, подпись, варианты, подсказка
+dfa_gui_fields <- function() {
+  F <- function(key, tab, type, label, choices = NULL, hint = "") list(key = key, tab = tab, type = type,
+                                                                        label = label, choices = choices, hint = hint)
+  demos <- c("multiplicative", "multiple", "mixed", "additive", "dupont", "groups", "custom")
+  list(
+    # --- Данные ---
+    F("data_file", "data", "file", "Файл данных", hint = "CSV, TXT, XLSX, XLS, RDS"),
+    F("sep", "data", "combo", "Разделитель CSV", c("auto", ";", ",", "\\t", "|"), "auto — определить"),
+    F("dec", "data", "combo", "Десятичный знак", c("auto", ",", "."), ""),
+    F("encoding", "data", "combo", "Кодировка", c("UTF-8", "CP1251", "latin1"), "CP1251 — старые файлы Excel"),
+    F("sheet", "data", "text", "Лист Excel", hint = "номер или имя"),
+    F("layout", "data", "combo", "Расположение", c("auto", "wide", "long"), "wide: строки=периоды; long: строки=факторы"),
+    F("period_col", "data", "combo_edit", "Столбец периодов", hint = "пусто — по порядку строк"),
+    F("group_col", "data", "combo_edit", "Столбец групп/объектов", hint = "пусто — без групп"),
+    F("auto_group", "data", "bool", "Искать столбец групп автоматически"),
+    F("na_action", "data", "combo", "Пропуски (NA)", c("stop", "omit"), "stop — ошибка, omit — удалить строки"),
+    # --- Модель ---
+    F("model", "model", "text_wide", "Модель", hint = "Y = a * b * c;  PR = Q*(P - V) - F;  R = P/(F + E)*100"),
+    F("response_label", "model", "text_wide", "Название результата", hint = "например: Выручка, тыс. руб."),
+    F("response_name", "model", "text", "Имя результата (для модели-функции)"),
+    F("constants", "model", "kv_num", "Константы (не факторы)", hint = "k = 1.5; n = 100"),
+    F("submodels", "model", "kv_str", "Подмодели (многоуровневая)", hint = "b = d * e; c = f + g"),
+    F("y_source", "model", "combo", "Значение результата", c("model", "data"), "если столбец результата есть в данных"),
+    F("check_tolerance", "model", "num", "Допуск сверки модели с данными", hint = "относительная погрешность"),
+    # --- Методы ---
+    F("methods", "methods", "checks", "Методы", names(DFA_METHOD_NAMES)),
+    F("main_method", "methods", "combo", "Основной метод (графики, выводы)", names(DFA_METHOD_NAMES)),
+    F("integral_nodes", "methods", "int", "Узлов квадратуры (интегральный)", hint = "8–64; 32 достаточно"),
+    F("use_symbolic_deriv", "methods", "bool", "Аналитические производные (D())"),
+    F("numeric_deriv_h", "methods", "num", "Шаг численной производной", hint = "относительный, 1e-6"),
+    F("max_shapley_factors", "methods", "int", "Макс. факторов для Шепли", hint = "расчёт 2^k"),
+    F("all_orders", "methods", "bool", "Анализ всех порядков подстановки"),
+    F("max_full_orders", "methods", "int", "Все перестановки до k факторов", hint = "8 → 40 320 перестановок"),
+    F("n_random_orders", "methods", "int", "Случайных перестановок при больших k"),
+    F("proportional_groups", "methods", "kv_vec", "Группы для пропорц. деления", hint = "Затраты = b, c  (пусто — автопоиск сумм)"),
+    F("seed", "methods", "int", "Seed случайных чисел"),
+    # --- Периоды ---
+    F("compare", "periods", "combo", "Схема сравнения", c("auto", "first_last", "chain", "fixed_base", "custom"),
+      "chain — цепная, fixed_base — базисная"),
+    F("base_period", "periods", "combo_edit", "Базисный период (custom)"),
+    F("report_period", "periods", "combo_edit", "Отчётный период (custom)"),
+    F("base_label", "periods", "text", "Подпись базы", hint = "База / План / Прошлый год"),
+    F("report_label", "periods", "text", "Подпись отчёта", hint = "Отчёт / Факт / Текущий год"),
+    F("sensitivity", "periods", "bool", "Эластичности и торнадо"),
+    F("tornado_pct", "periods", "num", "Торнадо: изменение фактора, ±%"),
+    F("sensitivity_point", "periods", "combo", "Точка расчёта эластичностей", c("base", "report")),
+    # --- Вывод ---
+    F("title", "output", "text_wide", "Заголовок отчёта"),
+    F("output_dir", "output", "dir", "Папка результатов"),
+    F("digits", "output", "int", "Знаков после запятой"),
+    F("pct_digits", "output", "int", "Знаков у процентов"),
+    F("decimal_mark", "output", "combo", "Десятичный знак в отчёте", c(",", ".")),
+    F("big_mark", "output", "combo", "Разделитель тысяч", c(" ", "", ",", "'")),
+    F("csv_sep", "output", "combo", "Разделитель в CSV", c(";", ",", "\\t")),
+    F("csv_dec", "output", "combo", "Десятичный знак в CSV", c(",", ".")),
+    F("save_txt", "output", "bool", "Сохранять TXT-отчёт"),
+    F("save_csv", "output", "bool", "Сохранять CSV-таблицы"),
+    F("save_xlsx", "output", "bool", "Сохранять XLSX (нужен openxlsx)"),
+    F("save_rds", "output", "bool", "Сохранять RDS"),
+    F("verbose", "output", "bool", "Печатать отчёт в консоль"),
+    # --- Графики ---
+    F("plots", "plots", "bool", "Строить графики"),
+    F("plot_png", "plots", "bool", "PNG-файлы"),
+    F("plot_pdf", "plots", "bool", "Общий PDF"),
+    F("plots_per_pair", "plots", "bool", "Графики для каждой пары периодов/объекта"),
+    F("plot_types", "plots", "checks", "Виды графиков", c("dashboard", "waterfall", "effects", "shares", "methods",
+      "order", "chain_steps", "dynamics", "elasticity", "tornado", "periods", "heatmap", "groups")),
+    F("png_width", "plots", "num", "Ширина, дюймы"),
+    F("png_height", "plots", "num", "Высота, дюймы"),
+    F("png_dpi", "plots", "int", "Разрешение, dpi"),
+    F("base_font", "plots", "num", "Масштаб шрифта"),
+    F("label_wrap", "plots", "int", "Перенос подписей, символов"),
+    F("waterfall_from_zero", "plots", "combo", "Водопад от нуля", c("auto", "TRUE", "FALSE")),
+    F("colors.positive", "colors", "color", "Цвет: рост"),
+    F("colors.negative", "colors", "color", "Цвет: снижение"),
+    F("colors.total", "colors", "color", "Цвет: итоги"),
+    F("colors.neutral", "colors", "color", "Цвет: нейтральный"),
+    F("colors.grid", "colors", "color", "Цвет: сетка"),
+    F("colors.text", "colors", "color", "Цвет: текст"),
+    F("colors.methods", "colors", "text_wide", "Палитра методов/факторов", hint = "цвета через запятую")
+  )
+}
+
+dfa_gui_labels <- list(
+  methods = paste0(names(DFA_METHOD_NAMES), " — ", DFA_METHOD_NAMES),
+  plot_types = c("dashboard — сводная панель", "waterfall — водопад", "effects — влияние факторов",
+                 "shares — структура влияния", "methods — сравнение методов", "order — чувствительность к порядку",
+                 "chain_steps — цепочка подстановок", "dynamics — темпы прироста", "elasticity — эластичности",
+                 "tornado — торнадо", "periods — по периодам", "heatmap — тепловая карта", "groups — по объектам"))
+
+# ---- преобразование значений конфиг <-> строка поля -------------------------
+dfa_gui_get <- function(cfg, key) {
+  if (startsWith(key, "colors.")) return(cfg$colors[[sub("^colors\\.", "", key)]])
+  cfg[[key]]
+}
+dfa_gui_set <- function(cfg, key, value) {
+  if (startsWith(key, "colors.")) { cfg$colors[[sub("^colors\\.", "", key)]] <- value; return(cfg) }
+  if (is.null(value)) cfg[key] <- list(NULL) else cfg[[key]] <- value
+  cfg
+}
+dfa_gui_to_str <- function(v, type) {
+  if (is.null(v) || length(v) == 0) return("")
+  switch(type,
+    bool = if (isTRUE(v)) "1" else "0",
+    kv_num = , kv_str = paste(sprintf("%s = %s", names(v), vapply(v, function(z) paste(as.character(z), collapse = ""), "")), collapse = "; "),
+    kv_vec = paste(sprintf("%s = %s", names(v), vapply(v, paste, "", collapse = ", ")), collapse = "; "),
+    num = , int = format(v, scientific = abs(v) < 1e-3 && v != 0),
+    text_wide = if (length(v) > 1) paste(v, collapse = ", ") else if (inherits(v, "formula")) paste(deparse(v), collapse = "") else as.character(v),
+    { s <- as.character(v)[1]; if (identical(s, "\t")) "\\t" else s })
+}
+dfa_gui_from_str <- function(s, type, key) {
+  raw <- s
+  s <- trimws(s)
+  num <- function(z) { r <- suppressWarnings(as.numeric(gsub(",", ".", gsub("[  ]", "", z)))); if (is.na(r)) stop("«", key, "»: ожидается число, получено '", z, "'"); r }
+  kv <- function(z) {
+    if (!nzchar(z)) return(list())
+    parts <- trimws(unlist(strsplit(z, "[;\n]")))
+    parts <- parts[nzchar(parts)]
+    if (!all(grepl("=", parts, fixed = TRUE))) stop("«", key, "»: формат 'имя = значение; имя = значение'")
+    stats::setNames(lapply(parts, function(p) trimws(sub("^[^=]*=", "", p))), trimws(sub("=.*$", "", parts)))
+  }
+  switch(type,
+    bool = s %in% c("1", "TRUE", "true"),
+    num = num(s),
+    int = as.integer(round(num(s))),
+    kv_num = lapply(kv(s), num),
+    kv_str = kv(s),
+    kv_vec = { v <- lapply(kv(s), function(z) trimws(strsplit(z, "[,; ]+")[[1]])); if (length(v)) v else NULL },
+    {
+      if (key == "colors.methods") return(trimws(strsplit(s, "[,; ]+")[[1]]))
+      if (key == "waterfall_from_zero") return(if (s == "TRUE") TRUE else if (s == "FALSE") FALSE else "auto")
+      if (key %in% c("sep", "csv_sep") && s == "\\t") return("\t")
+      if (key == "sheet") { n <- suppressWarnings(as.numeric(s)); return(if (is.na(n)) s else n) }
+      if (key == "big_mark") return(raw)  # пробел — допустимое значение
+      if (!nzchar(s)) NULL else s
+    })
+}
+
+dfa_gui <- function(cfg = CONFIG, on_open = NULL) {
+  if (!requireNamespace("tcltk", quietly = TRUE) ||
+      !isTRUE(tryCatch({ suppressWarnings(tcltk::tclVersion()); as.logical(tcltk::tcl("info", "exists", "tk_version")) },
+                       error = function(e) FALSE))) {
+    if (!interactive())
+      stop("Окно настроек недоступно: нет графического дисплея или R собран без Tcl/Tk.\n",
+           "Сохраните конфиг (dfa_config_write) и запустите: Rscript deterministic_factor_analysis.R --config=файл.R",
+           call. = FALSE)
+    message("Tk (tcltk) недоступен: нет графического дисплея или R собран без Tcl/Tk.\n",
+            "Открываю конфиг в текстовом редакторе R (dfa_edit_config)...")
+    cfg <- dfa_edit_config(cfg)
+    return(invisible(list(config = cfg, result = NULL)))
+  }
+  tk <- asNamespace("tcltk")
+  cfg <- utils::modifyList(CONFIG, cfg, keep.null = TRUE)
+  G <- new.env()
+  G$cfg <- cfg; G$data <- cfg$data; G$result <- NULL; G$vars <- list(); G$widgets <- list()
+  G$fvars <- list(); G$fields <- dfa_gui_fields()
+  G$source <- tk$tclVar(if (!is.null(cfg$data)) "object" else if (!is.null(cfg$data_file)) "file" else "demo")
+  G$demo <- tk$tclVar(cfg$demo %||% "multiplicative")
+  G$objname <- tk$tclVar("")
+  G$order <- tk$tclVar(if (length(cfg$order) > 1) paste(cfg$order, collapse = ", ") else as.character(cfg$order))
+  G$status <- tk$tclVar("Готово к работе")
+
+  top <- tk$tktoplevel(); G$top <- top
+  tk$tkwm.title(top, "Детерминированный факторный анализ — настройки")
+  tk$tkwm.geometry(top, "1080x780")
+  tk$tkwm.minsize(top, 820, 600)
+  ws <- tryCatch(tk$tclvalue(tk$tcl("tk", "windowingsystem")), error = function(e) "x11")
+  if (ws == "x11") try(tk$tcl("ttk::style", "theme", "use", "clam"), silent = TRUE)
+  if (ws == "win32") try(tk$tcl("ttk::style", "theme", "use", "vista"), silent = TRUE)
+  tk$tcl("ttk::style", "configure", "Hint.TLabel", foreground = "#777777")
+  tk$tcl("ttk::style", "configure", "Head.TLabel", font = "TkHeadingFont")
+
+  nb <- tk$ttknotebook(top); G$nb <- nb
+  tabs <- c(data = "1. Данные", model = "2. Модель", factors = "3. Факторы", methods = "4. Методы",
+            periods = "5. Периоды и сценарии", output = "6. Вывод", plots = "7. Графики", colors = "8. Цвета",
+            log = "Журнал / отчёт")
+  G$tab <- list()
+  for (t in names(tabs)) {
+    fr <- tk$ttkframe(nb, padding = 10)
+    tk$tkadd(nb, fr, text = tabs[[t]])
+    G$tab[[t]] <- fr
+  }
+  G$row <- stats::setNames(as.list(rep(0L, length(tabs))), names(tabs))
+  next_row <- function(t) { G$row[[t]] <- G$row[[t]] + 1L; G$row[[t]] }
+
+  # ---- построение одного поля ------------------------------------------------
+  make_field <- function(f) {
+    fr <- G$tab[[f$tab]]
+    r <- next_row(f$tab)
+    val <- dfa_gui_to_str(dfa_gui_get(G$cfg, f$key), f$type)
+    lab <- tk$ttklabel(fr, text = f$label)
+    hint <- tk$ttklabel(fr, text = f$hint, style = "Hint.TLabel", wraplength = 230, justify = "left")
+    if (f$type == "checks") {
+      tk$tkgrid(lab, row = r - 1, column = 0, sticky = "nw", pady = 3)
+      box <- tk$ttkframe(fr)
+      cur <- dfa_gui_get(G$cfg, f$key)
+      lbls <- if (!is.null(dfa_gui_labels[[f$key]])) dfa_gui_labels[[f$key]] else f$choices
+      vs <- list()
+      for (i in seq_along(f$choices)) {
+        v <- tk$tclVar(if (f$choices[i] %in% cur) "1" else "0")
+        cb <- tk$ttkcheckbutton(box, text = lbls[i], variable = v)
+        tk$tkgrid(cb, row = (i - 1) %/% 2, column = (i - 1) %% 2, sticky = "w", padx = 4)
+        vs[[f$choices[i]]] <- v
+      }
+      tk$tkgrid(box, row = r - 1, column = 1, columnspan = 3, sticky = "w", pady = 3)
+      G$vars[[f$key]] <- vs
+      return(invisible())
+    }
+    v <- tk$tclVar(val)
+    G$vars[[f$key]] <- v
+    w <- switch(f$type,
+      bool = tk$ttkcheckbutton(fr, variable = v),
+      combo = tk$ttkcombobox(fr, values = f$choices, textvariable = v, width = 28, state = "readonly"),
+      combo_edit = tk$ttkcombobox(fr, values = "", textvariable = v, width = 28),
+      text_wide = tk$ttkentry(fr, textvariable = v, width = 50),
+      kv_num = , kv_str = , kv_vec = tk$ttkentry(fr, textvariable = v, width = 50),
+      file = , dir = tk$ttkentry(fr, textvariable = v, width = 45),
+      color = tk$ttkentry(fr, textvariable = v, width = 12),
+      tk$ttkentry(fr, textvariable = v, width = 30))
+    G$widgets[[f$key]] <- w
+    tk$tkgrid(lab, row = r - 1, column = 0, sticky = "w", pady = 3)
+    if (f$type %in% c("file", "dir", "color")) {
+      box <- tk$ttkframe(fr)
+      tk$tkdestroy(w)
+      w <- if (f$type == "color") tk$ttkentry(box, textvariable = v, width = 12) else tk$ttkentry(box, textvariable = v, width = 45)
+      G$widgets[[f$key]] <- w
+      tk$tkpack(w, side = "left")
+      if (f$type == "color") {
+        sw <- tk$tklabel(box, text = "      ", background = tryCatch(tk$tclvalue(v), error = function(e) "white"), relief = "solid", borderwidth = 1)
+        btn <- tk$ttkbutton(box, text = "Выбрать…", command = function() {
+          col <- tk$tclvalue(tk$tcl("tk_chooseColor", initialcolor = tk$tclvalue(v), title = f$label))
+          if (nzchar(col)) { tcltk::tclvalue(v) <- col; tk$tkconfigure(sw, background = col) }
+        })
+        tk$tkpack(sw, side = "left", padx = 6); tk$tkpack(btn, side = "left")
+      } else {
+        btn <- tk$ttkbutton(box, text = "Обзор…", command = function() {
+          p <- if (f$type == "dir") tk$tclvalue(tk$tkchooseDirectory(title = f$label))
+               else tk$tclvalue(tk$tkgetOpenFile(title = f$label, filetypes =
+                    "{{Данные} {.csv .txt .xlsx .xls .rds}} {{Все файлы} *}"))
+          if (nzchar(p)) {
+            tcltk::tclvalue(v) <- p
+            if (f$key == "data_file") { tcltk::tclvalue(G$source) <- "file"; load_data(quiet = TRUE) }
+          }
+        })
+        tk$tkpack(btn, side = "left", padx = 6)
+      }
+      w <- box
+    }
+    tk$tkgrid(w, row = r - 1, column = 1, sticky = "w", pady = 3)
+    tk$tkgrid(hint, row = r - 1, column = 2, sticky = "w", padx = 8)
+  }
+
+  # ---- вкладка «Данные»: источник --------------------------------------------
+  fd <- G$tab$data
+  tk$tkgrid(tk$ttklabel(fd, text = "Источник данных", style = "Head.TLabel"), row = 0, column = 0, sticky = "w")
+  G$row$data <- 1L
+  src <- tk$ttkframe(fd)
+  tk$tkpack(tk$ttkradiobutton(src, text = "Демо-набор:", variable = G$source, value = "demo"), side = "left")
+  demo_cb <- tk$ttkcombobox(src, values = c("multiplicative", "multiple", "mixed", "additive", "dupont", "groups", "custom"),
+                            textvariable = G$demo, width = 16, state = "readonly")
+  tk$tkpack(demo_cb, side = "left", padx = 4)
+  tk$tkpack(tk$ttkradiobutton(src, text = "Файл (ниже)", variable = G$source, value = "file"), side = "left", padx = 10)
+  tk$tkpack(tk$ttkradiobutton(src, text = "Объект R:", variable = G$source, value = "object"), side = "left")
+  tk$tkpack(tk$ttkentry(src, textvariable = G$objname, width = 14), side = "left", padx = 4)
+  tk$tkgrid(src, row = 1, column = 0, columnspan = 3, sticky = "w", pady = 4)
+  G$row$data <- 2L
+  for (f in G$fields) if (f$tab == "data") make_field(f)
+
+  btns <- tk$ttkframe(fd)
+  r <- next_row("data")
+  tk$tkgrid(btns, row = r, column = 0, columnspan = 3, sticky = "w", pady = 8)
+  prev <- tk$tktext(fd, height = 12, width = 110, wrap = "none", font = "TkFixedFont")
+  tk$tkgrid(prev, row = r + 1, column = 0, columnspan = 3, sticky = "nsew")
+  tk$tkgrid.rowconfigure(fd, r + 1, weight = 1); tk$tkgrid.columnconfigure(fd, 2, weight = 1)
+  set_text <- function(w, lines) {
+    tk$tkconfigure(w, state = "normal"); tk$tkdelete(w, "1.0", "end")
+    tk$tkinsert(w, "end", paste(lines, collapse = "\n"))
+  }
+
+  # ---- вкладка «Факторы»: таблица подписей и типов ----------------------------
+  ff <- G$tab$factors
+  tk$tkgrid(tk$ttklabel(ff, text = "Факторы модели: подписи для отчёта и графиков, тип фактора", style = "Head.TLabel"),
+            row = 0, column = 0, columnspan = 3, sticky = "w")
+  ogr <- tk$ttkframe(ff)
+  tk$tkpack(tk$ttklabel(ogr, text = "Порядок подстановки:"), side = "left")
+  tk$tkpack(tk$ttkcombobox(ogr, values = c("model", "auto"), textvariable = G$order, width = 30), side = "left", padx = 6)
+  tk$tkpack(tk$ttklabel(ogr, text = "model — как в формуле; auto — сначала количественные, затем качественные;\nили свой порядок через запятую: a, b, c",
+                        style = "Hint.TLabel", justify = "left"), side = "left")
+  tk$tkgrid(ogr, row = 1, column = 0, columnspan = 3, sticky = "w", pady = 6)
+  G$fgrid <- tk$ttkframe(ff)
+  tk$tkgrid(G$fgrid, row = 2, column = 0, columnspan = 3, sticky = "nw")
+  G$minfo <- tk$ttklabel(ff, text = "", style = "Hint.TLabel", wraplength = 900, justify = "left")
+  tk$tkgrid(G$minfo, row = 3, column = 0, columnspan = 3, sticky = "w", pady = 8)
+
+  rebuild_factors <- function(factors) {
+    for (w in as.character(tk$tkwinfo("children", G$fgrid))) tk$tcl("destroy", w)
+    hdr <- c("Фактор", "Подпись (наименование, ед. изм.)", "Тип: quantitative — количественный, qualitative — качественный")
+    for (j in 1:3) tk$tkgrid(tk$ttklabel(G$fgrid, text = hdr[j], style = "Head.TLabel"), row = 0, column = j - 1, sticky = "w", padx = 4)
+    old <- G$fvars; G$fvars <- list()
+    for (i in seq_along(factors)) {
+      f <- factors[i]
+      lv <- tk$tclVar(if (!is.null(old[[f]])) tk$tclvalue(old[[f]]$label) else unname(G$cfg$factor_labels[f]) %||% "")
+      if (is.na(tk$tclvalue(lv))) tcltk::tclvalue(lv) <- ""
+      tv <- tk$tclVar(if (!is.null(old[[f]])) tk$tclvalue(old[[f]]$type) else {
+        t0 <- unname(G$cfg$factor_types[f]); if (length(t0) && !is.na(t0)) t0 else "quantitative" })
+      tk$tkgrid(tk$ttklabel(G$fgrid, text = f, font = "TkFixedFont"), row = i, column = 0, sticky = "w", padx = 4, pady = 2)
+      tk$tkgrid(tk$ttkentry(G$fgrid, textvariable = lv, width = 50), row = i, column = 1, sticky = "w", padx = 4)
+      tk$tkgrid(tk$ttkcombobox(G$fgrid, values = c("quantitative", "qualitative", "structural"), textvariable = tv,
+                               width = 14, state = "readonly"), row = i, column = 2, sticky = "w", padx = 4)
+      G$fvars[[f]] <- list(label = lv, type = tv)
+    }
+  }
+  parse_model <- function(show = TRUE) {
+    m <- trimws(tk$tclvalue(G$vars$model))
+    if (!nzchar(m)) { if (show) tk$tkmessageBox(parent = top, title = "Модель", message = "Введите модель, например: Y = a * b * c", icon = "warning"); return(NULL) }
+    consts <- tryCatch(dfa_gui_from_str(tk$tclvalue(G$vars$constants), "kv_num", "constants"), error = function(e) list())
+    subs <- tryCatch(dfa_gui_from_str(tk$tclvalue(G$vars$submodels), "kv_str", "submodels"), error = function(e) list())
+    mdl <- tryCatch(dfa_parse_model(m, subs, consts, "Y", G$cfg), error = function(e) e)
+    if (inherits(mdl, "error")) {
+      tk$tkconfigure(G$minfo, text = paste("Ошибка в модели:", conditionMessage(mdl)))
+      if (show) tk$tkmessageBox(parent = top, title = "Ошибка в модели", message = conditionMessage(mdl), icon = "error")
+      return(NULL)
+    }
+    rebuild_factors(mdl$factors)
+    applicable <- c("chain", "shapley", if (!is.null(mdl$expr)) c("abs_diff", "integral"),
+                    if (identical(mdl$type, "multiplicative") && all(abs(mdl$pp$p - 1) < 1e-12)) "rel_diff",
+                    if (!is.null(mdl$pp)) c("index", "log"),
+                    if (length(mdl$groups) || identical(mdl$type, "additive")) "proportional")
+    info <- c(paste("Модель:", mdl$text), paste("Тип:", DFA_MODEL_TYPES[mdl$type]),
+              paste("Факторы:", paste(mdl$factors, collapse = ", ")),
+              if (length(mdl$groups)) paste("Суммы факторов:", paste(vapply(mdl$groups, function(g) paste(deparse(g$expr), collapse = ""), ""), collapse = "; ")),
+              paste("Применимые методы:", paste(DFA_METHOD_SHORT[applicable], collapse = ", ")))
+    tk$tkconfigure(G$minfo, text = paste(info, collapse = "\n"))
+    tcltk::tclvalue(G$status) <- paste0("Модель разобрана: ", DFA_MODEL_TYPES[mdl$type], ", факторов: ", length(mdl$factors))
+    mdl
+  }
+
+  # ---- загрузка / просмотр / редактирование данных ------------------------------
+  current_data <- function() {
+    s <- tk$tclvalue(G$source)
+    if (s == "demo") return(dfa_demo(tk$tclvalue(G$demo))$data)
+    if (s == "object") {
+      nm <- trimws(tk$tclvalue(G$objname))
+      if (nzchar(nm)) {
+        if (!exists(nm, envir = globalenv())) stop("Объект '", nm, "' не найден в глобальном окружении")
+        return(as.data.frame(get(nm, envir = globalenv())))
+      }
+      if (is.null(G$data)) stop("Укажите имя объекта (data.frame) или отредактируйте данные")
+      return(G$data)
+    }
+    if (s == "edited") return(G$data)
+    p <- trimws(tk$tclvalue(G$vars$data_file))
+    if (!nzchar(p)) stop("Не выбран файл данных")
+    dfa_read_data(p, dfa_gui_from_str(tk$tclvalue(G$vars$sep), "combo", "sep") %||% "auto",
+                  dfa_gui_from_str(tk$tclvalue(G$vars$dec), "combo", "dec") %||% "auto",
+                  dfa_gui_from_str(tk$tclvalue(G$vars$sheet), "text", "sheet") %||% 1,
+                  tk$tclvalue(G$vars$encoding))
+  }
+  load_data <- function(quiet = FALSE) {
+    d <- tryCatch(current_data(), error = function(e) e)
+    if (inherits(d, "error")) {
+      set_text(prev, paste("Ошибка загрузки:", conditionMessage(d)))
+      if (!quiet) tk$tkmessageBox(parent = top, title = "Данные", message = conditionMessage(d), icon = "error")
+      return(NULL)
+    }
+    G$data <- d
+    cols <- names(d)
+    chr <- cols[!vapply(d, is.numeric, logical(1))]
+    for (k in c("period_col", "group_col")) tk$tkconfigure(G$widgets[[k]], values = c("", chr))
+    pc <- tk$tclvalue(G$vars$period_col)
+    pcol <- if (nzchar(pc) && pc %in% cols) pc else chr[1]
+    per <- if (!is.na(pcol %||% NA) && !is.null(pcol)) unique(as.character(d[[pcol]])) else as.character(seq_len(nrow(d)))
+    for (k in c("base_period", "report_period")) tk$tkconfigure(G$widgets[[k]], values = per)
+    owidth <- options(width = 200); on.exit(options(owidth))
+    set_text(prev, c(sprintf("Строк: %d, столбцов: %d.  Числовые: %s", nrow(d), ncol(d),
+                             paste(cols[vapply(d, is.numeric, logical(1))], collapse = ", ")),
+                     "", utils::capture.output(print(utils::head(d, 30), row.names = FALSE))))
+    tcltk::tclvalue(G$status) <- sprintf("Данные загружены: %d × %d", nrow(d), ncol(d))
+    d
+  }
+  edit_data <- function() {
+    d <- if (!is.null(G$data)) G$data else load_data()
+    if (is.null(d)) d <- data.frame(period = c("База", "Отчёт"), a = c(0, 0), b = c(0, 0))
+    new <- tryCatch(utils::edit(d), error = function(e) e)
+    if (inherits(new, "error")) {
+      tk$tkmessageBox(parent = top, title = "Редактор данных", icon = "error",
+                      message = paste("Встроенный редактор таблиц R недоступен:", conditionMessage(new),
+                                      "\nИзмените файл данных в Excel и загрузите его заново."))
+      return(invisible())
+    }
+    G$data <- as.data.frame(new); tcltk::tclvalue(G$source) <- "edited"
+    load_data(quiet = TRUE)
+  }
+  new_data <- function() {
+    mdl <- parse_model(show = FALSE)
+    f <- if (!is.null(mdl)) mdl$factors else c("a", "b")
+    d <- data.frame(period = c("База", "Отчёт"), matrix(0, 2, length(f), dimnames = list(NULL, f)), check.names = FALSE)
+    tcltk::tclvalue(G$vars$period_col) <- "period"
+    G$data <- d; edit_data()
+  }
+  tk$tkpack(tk$ttkbutton(btns, text = "Загрузить / показать", command = function() load_data()), side = "left")
+  tk$tkpack(tk$ttkbutton(btns, text = "Редактировать таблицу…", command = edit_data), side = "left", padx = 6)
+  tk$tkpack(tk$ttkbutton(btns, text = "Новая таблица по модели…", command = new_data), side = "left")
+  tk$tkpack(tk$ttkbutton(btns, text = "Сохранить данные в CSV…", command = function() {
+    if (is.null(G$data)) return(invisible())
+    p <- tk$tclvalue(tk$tkgetSaveFile(defaultextension = ".csv", initialfile = "dfa_data.csv"))
+    if (nzchar(p)) { dfa_write_csv(G$data, p, G$cfg); tcltk::tclvalue(G$status) <- paste("Данные сохранены:", p) }
+  }), side = "left", padx = 6)
+
+  # ---- остальные вкладки ---------------------------------------------------------
+  for (t in c("model", "methods", "periods", "output", "plots", "colors"))
+    for (f in G$fields) if (f$tab == t) make_field(f)
+  mb <- tk$ttkframe(G$tab$model)
+  tk$tkgrid(mb, row = next_row("model"), column = 0, columnspan = 3, sticky = "w", pady = 8)
+  tk$tkpack(tk$ttkbutton(mb, text = "Проверить модель", command = function() {
+    if (!is.null(parse_model())) tk$tkselect(nb, 2) }), side = "left")
+  tk$tkgrid(tk$ttklabel(G$tab$model, style = "Hint.TLabel", justify = "left", text = paste(
+    "Операции: + - * / ^ ( ), функции R: log, exp, sqrt, abs, pmax, ifelse и др.",
+    "Константы не раскладываются. Подмодели подставляются в модель: Y = a*b и b = d*e → Y = a*(d*e).",
+    "Кнопка «Проверить модель» определит тип модели, факторы и применимые методы.", sep = "\n")),
+    row = next_row("model"), column = 0, columnspan = 3, sticky = "w")
+
+  # ---- журнал --------------------------------------------------------------------
+  fl <- G$tab$log
+  G$log <- tk$tktext(fl, wrap = "none", font = "TkFixedFont")
+  sy <- tk$ttkscrollbar(fl, orient = "vertical", command = function(...) tk$tkyview(G$log, ...))
+  sx <- tk$ttkscrollbar(fl, orient = "horizontal", command = function(...) tk$tkxview(G$log, ...))
+  tk$tkconfigure(G$log, yscrollcommand = function(...) tk$tkset(sy, ...), xscrollcommand = function(...) tk$tkset(sx, ...))
+  tk$tkgrid(G$log, sy, sticky = "nsew"); tk$tkgrid(sx, sticky = "ew")
+  tk$tkgrid.rowconfigure(fl, 0, weight = 1); tk$tkgrid.columnconfigure(fl, 0, weight = 1)
+
+  # ---- сбор / установка настроек --------------------------------------------------
+  collect <- function() {
+    cfg <- G$cfg
+    for (f in G$fields) {
+      v <- G$vars[[f$key]]
+      val <- if (f$type == "checks") names(v)[vapply(v, function(z) tk$tclvalue(z) == "1", logical(1))]
+             else dfa_gui_from_str(tk$tclvalue(v), f$type, f$key)
+      cfg <- dfa_gui_set(cfg, f$key, val)
+    }
+    o <- trimws(tk$tclvalue(G$order))
+    cfg$order <- if (o %in% c("model", "auto", "")) (if (nzchar(o)) o else "model") else trimws(strsplit(o, "[,; ]+")[[1]])
+    if (length(G$fvars)) {
+      lab <- vapply(G$fvars, function(z) trimws(tk$tclvalue(z$label)), "")
+      cfg$factor_labels <- lab[nzchar(lab)]
+      cfg$factor_types <- vapply(G$fvars, function(z) tk$tclvalue(z$type), "")
+    }
+    if (!length(cfg$methods)) stop("Не выбран ни один метод")
+    s <- tk$tclvalue(G$source)
+    cfg$demo <- NULL
+    if (s == "file") { cfg$data <- NULL }
+    else { cfg$data <- current_data(); cfg$data_file <- NULL }
+    cfg
+  }
+  apply_cfg <- function(cfg) {
+    G$cfg <- utils::modifyList(CONFIG, cfg, keep.null = TRUE)
+    for (f in G$fields) {
+      v <- G$vars[[f$key]]; cur <- dfa_gui_get(G$cfg, f$key)
+      if (f$type == "checks") { for (ch in names(v)) tcltk::tclvalue(v[[ch]]) <- if (ch %in% cur) "1" else "0" }
+      else tcltk::tclvalue(v) <- dfa_gui_to_str(cur, f$type)
+    }
+    tcltk::tclvalue(G$order) <- if (length(G$cfg$order) > 1) paste(G$cfg$order, collapse = ", ") else as.character(G$cfg$order)
+    G$fvars <- list()
+    if (!is.null(G$cfg$data)) { G$data <- G$cfg$data; tcltk::tclvalue(G$source) <- "edited" }
+    else if (!is.null(G$cfg$data_file)) tcltk::tclvalue(G$source) <- "file"
+    if (!is.null(G$cfg$model)) parse_model(show = FALSE)
+    load_data(quiet = TRUE)
+  }
+  load_demo <- function() {
+    d <- dfa_demo(tk$tclvalue(G$demo))
+    base <- CONFIG; for (nm in setdiff(names(d), "data")) base[[nm]] <- d[[nm]]
+    base$data <- NULL; base$data_file <- NULL
+    apply_cfg(base)
+    tcltk::tclvalue(G$source) <- "demo"; load_data(quiet = TRUE)
+    tcltk::tclvalue(G$status) <- paste("Загружено демо:", tk$tclvalue(G$demo))
+  }
+  tk$tkbind(demo_cb, "<<ComboboxSelected>>", function() load_demo())
+
+  # ---- запуск ------------------------------------------------------------------------
+  run <- function() {
+    cfg <- tryCatch(collect(), error = function(e) e)
+    if (inherits(cfg, "error")) {
+      tk$tkmessageBox(parent = top, title = "Ошибка в настройках", message = conditionMessage(cfg), icon = "error"); return(invisible())
+    }
+    tcltk::tclvalue(G$status) <- "Идёт расчёт…"; tk$tkconfigure(top, cursor = "watch"); tk$tcl("update")
+    warns <- character(0)
+    out <- NULL
+    res <- tryCatch(withCallingHandlers({
+      out <- utils::capture.output(r <- dfa_run(utils::modifyList(cfg, list(verbose = TRUE))))
+      r
+    }, warning = function(w) { warns <<- c(warns, conditionMessage(w)); invokeRestart("muffleWarning") },
+       message = function(m) { warns <<- c(warns, trimws(conditionMessage(m))); invokeRestart("muffleMessage") }),
+      error = function(e) e)
+    tk$tkconfigure(top, cursor = "")
+    if (inherits(res, "error")) {
+      tcltk::tclvalue(G$status) <- "Ошибка расчёта"
+      set_text(G$log, c("ОШИБКА:", conditionMessage(res), if (length(warns)) c("", "Предупреждения:", warns)))
+      tk$tkselect(nb, 8)
+      tk$tkmessageBox(parent = top, title = "Ошибка расчёта", message = conditionMessage(res), icon = "error")
+      return(invisible())
+    }
+    G$result <- res; G$cfg <- utils::modifyList(G$cfg, cfg, keep.null = TRUE)
+    set_text(G$log, c(out, if (length(warns)) c("", "Сообщения и предупреждения:", paste("•", warns))))
+    tk$tkselect(nb, 8)
+    tcltk::tclvalue(G$status) <- sprintf("Готово: %d файлов в %s", length(res$files), normalizePath(cfg$output_dir))
+    assign("DFA_RESULT", res, envir = globalenv()); assign("DFA_CONFIG", cfg, envir = globalenv())
+  }
+  open_path <- function(p) if (file.exists(p)) utils::browseURL(normalizePath(p)) else
+    tk$tkmessageBox(parent = top, title = "Нет файла", message = paste("Сначала запустите анализ:", p))
+
+  # ---- нижняя панель -------------------------------------------------------------------
+  bar <- tk$ttkframe(top, padding = c(10, 6))
+  B <- function(text, cmd) tk$tkpack(tk$ttkbutton(bar, text = text, command = cmd), side = "left", padx = 3)
+  B("▶ Запустить анализ", run)
+  B("Сохранить конфиг…", function() {
+    cfg <- tryCatch(collect(), error = function(e) e)
+    if (inherits(cfg, "error")) { tk$tkmessageBox(parent = top, message = conditionMessage(cfg), icon = "error"); return() }
+    p <- tk$tclvalue(tk$tkgetSaveFile(defaultextension = ".R", initialfile = "dfa_config.R",
+                                      filetypes = "{{R-скрипт} {.R}} {{Все файлы} *}"))
+    if (nzchar(p)) {
+      incl <- tk$tclvalue(G$source) != "file"
+      dfa_config_write(cfg, p, include_data = incl)
+      tcltk::tclvalue(G$status) <- paste("Конфиг сохранён:", p)
+    }
+  })
+  B("Загрузить конфиг…", function() {
+    p <- tk$tclvalue(tk$tkgetOpenFile(filetypes = "{{R-скрипт} {.R .r}} {{Все файлы} *}"))
+    if (nzchar(p)) {
+      cfg <- tryCatch(dfa_config_read(p), error = function(e) e)
+      if (inherits(cfg, "error")) tk$tkmessageBox(parent = top, message = conditionMessage(cfg), icon = "error")
+      else { if (!is.null(cfg$demo) && is.null(cfg$data) && is.null(cfg$data_file)) { tcltk::tclvalue(G$demo) <- cfg$demo; load_demo() }
+             else apply_cfg(cfg)
+             tcltk::tclvalue(G$status) <- paste("Конфиг загружен:", p) }
+    }
+  })
+  B("Сбросить", function() load_demo())
+  B("Открыть PDF", function() open_path(file.path(G$cfg$output_dir, "dfa_plots.pdf")))
+  B("Открыть папку", function() open_path(G$cfg$output_dir))
+  close_gui <- function() {
+    cfg <- tryCatch(collect(), error = function(e) NULL)   # сохранить правки, сделанные после запуска
+    if (!is.null(cfg)) G$cfg <- cfg
+    tk$tkdestroy(top)
+  }
+  tk$tkwm.protocol(top, "WM_DELETE_WINDOW", close_gui)
+  tk$tkpack(tk$ttkbutton(bar, text = "Закрыть", command = close_gui), side = "right")
+  tk$tkpack(tk$ttklabel(top, textvariable = G$status, style = "Hint.TLabel", padding = c(12, 2)), side = "bottom", fill = "x")
+  tk$tkpack(bar, side = "bottom", fill = "x")
+  tk$tkpack(nb, side = "top", fill = "both", expand = TRUE, padx = 6, pady = 6)
+
+  # ---- начальное заполнение ---------------------------------------------------------------
+  if (tk$tclvalue(G$source) == "demo" && is.null(cfg$model)) load_demo() else {
+    if (!is.null(cfg$demo) && is.null(cfg$data) && is.null(cfg$data_file)) {
+      d <- dfa_demo(cfg$demo)
+      for (nm in setdiff(names(d), "data")) if (nm == "model" && is.null(cfg$model) || identical(cfg[[nm]], CONFIG[[nm]])) cfg[[nm]] <- d[[nm]]
+      apply_cfg(cfg); tcltk::tclvalue(G$source) <- "demo"; load_data(quiet = TRUE)
+    } else apply_cfg(cfg)
+  }
+  G$run <- run; G$close <- close_gui; G$collect <- collect; G$apply_cfg <- apply_cfg; G$load_demo <- load_demo; G$parse_model <- parse_model
+  if (is.function(on_open)) tk$tcl("after", 800, function() on_open(G))
+  tk$tkwait.window(top)
+  cfg_out <- tryCatch(G$cfg, error = function(e) cfg)
+  assign("DFA_CONFIG", cfg_out, envir = globalenv())
+  if (!is.null(G$result)) assign("DFA_RESULT", G$result, envir = globalenv())
+  invisible(list(config = cfg_out, result = G$result))
+}
+
+
+# =============================================================================
+# 14. ЗАПУСК ИЗ КОМАНДНОЙ СТРОКИ
 # =============================================================================
 dfa_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   cfg <- CONFIG
   kv <- regmatches(args, regexec("^--([^=]+)=(.*)$", args))
   opts <- list()
   for (m in kv) if (length(m) == 3) opts[[m[2]]] <- m[3]
-  if (!is.null(opts$config)) {
-    e <- new.env(); e$CONFIG <- CONFIG
-    sys.source(opts$config, envir = e)
-    cfg <- e$CONFIG
-  }
+  if (!is.null(opts$config)) cfg <- dfa_config_read(opts$config)
   if (!is.null(opts$data))  { cfg$data_file <- opts$data; cfg$demo <- NULL }
   if (!is.null(opts$model)) cfg$model <- opts$model
   if (!is.null(opts$out))   cfg$output_dir <- opts$out
@@ -1783,9 +2462,10 @@ dfa_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     }
     cfg$demo <- opts$demo; cfg$data_file <- NULL; cfg$model <- NULL
   }
+  if ("--gui" %in% args) return(invisible(dfa_gui(cfg)))
   dfa_run(cfg)
 }
 
 if (!exists("DFA_NO_RUN") || !isTRUE(get("DFA_NO_RUN"))) {
-  if (!interactive()) dfa_cli() else dfa_run(CONFIG)
+  if (!interactive()) dfa_cli() else if (isTRUE(CONFIG$gui)) dfa_gui(CONFIG) else dfa_run(CONFIG)
 }

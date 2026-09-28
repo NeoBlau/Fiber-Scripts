@@ -26,11 +26,15 @@ chk("смешанная: тип",                r$model$type == "mixed")
 chk("смешанная: цепные Q = 264000",  abs(r$effects["Q", "chain"] - 264000) < 1e-6)
 chk("смешанная: интегр. Q = 262000", abs(r$effects["Q", "integral"] - 262000) < 1e-6)
 chk("смешанная: баланс всех методов",all(r$balance$ok))
+chk("смешанная: абс. разницы = цепные", "abs_diff" %in% r$ok_methods && isTRUE(all.equal(r$effects[, "abs_diff"], r$effects[, "chain"])))
+chk("смешанная: формула ΔQ × (P0 - V0)", r$methods$abs_diff$details$formula[1] == "ΔY(Q) = ΔQ × (P0 - V0)")
+chk("смешанная: формула −ΔF",        r$methods$abs_diff$details$formula[4] == "ΔY(F) = −ΔF")
 
 # Кратная с суммой в знаменателе
 r <- an("R = P/(F + E)*100", base = c(P = 1800, F = 9000, E = 6000), report = c(P = 2250, F = 9800, E = 7400))
 chk("кратная: тип",                  r$model$type == "multiple")
 chk("кратная: цепные P = 3",         abs(r$effects["P", "chain"] - 3) < 1e-9)
+chk("кратная: абс. разницы = цепные", isTRUE(all.equal(r$effects[, "abs_diff"], r$effects[, "chain"])))
 chk("пропорц.: F:E = 800:1400",      abs(r$effects["F", "proportional"] / r$effects["E", "proportional"] - 800 / 1400) < 1e-9)
 
 # Аддитивная, в т.ч. взаимное погашение (ΔY = 0)
@@ -51,6 +55,24 @@ r <- an("Y = ifelse(a > 0, a*b, 0)", base = c(a = 1, b = 2), report = c(a = 2, b
 chk("численная производная",         "integral" %in% r$ok_methods && all(r$balance$ok))
 r <- an("Y = a*b", base = c(a = 100, b = 10), report = c(a = 120, b = 12), order = c("b", "a"))
 chk("явный порядок подстановки",     isTRUE(all.equal(unname(r$effects[c("a", "b"), "chain"]), c(240, 200))))
+
+# Конфиг: запись -> чтение без потерь
+tmp <- tempfile(fileext = ".R")
+c1 <- utils::modifyList(CONFIG, list(model = "Y = a*(b - c)", order = c("c", "a", "b"), big_mark = " ",
+                                     factor_labels = c(a = "Объём"), constants = list(k = 2),
+                                     proportional_groups = list(G = c("b", "c")), csv_sep = "\t"), keep.null = TRUE)
+dfa_config_write(c1, tmp); c2 <- dfa_config_read(tmp)
+chk("конфиг: сохранение и загрузка",   identical(c1[names(c1) != "data"], c2[names(c2) != "data"]))
+# Преобразования полей GUI: строка <-> значение
+fl <- dfa_gui_fields()
+ok <- TRUE
+for (f in fl) if (f$type != "checks") {
+  v <- dfa_gui_get(c1, f$key)
+  back <- dfa_gui_from_str(dfa_gui_to_str(v, f$type), f$type, f$key)
+  if (!(identical(back, v) || (is.numeric(v) && isTRUE(all.equal(as.numeric(back), v))) ||
+        (is.null(back) && (is.null(v) || length(v) == 0)))) { ok <- FALSE; cat("  поле", f$key, "\n") }
+}
+chk("GUI: поля конвертируются без потерь", ok)
 
 # Все демо запускаются
 for (d in c("multiplicative", "multiple", "mixed", "additive", "dupont", "groups", "custom")) {
