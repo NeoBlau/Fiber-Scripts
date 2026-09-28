@@ -75,7 +75,7 @@ CONFIG <- list(
   sep        = "auto",       # разделитель CSV: "auto", ";", ",", "\t"
   dec        = "auto",       # десятичный знак: "auto", ",", "."
   sheet      = 1,            # лист Excel
-  encoding   = "UTF-8",      # кодировка файла
+  encoding   = "auto",       # кодировка файла: "auto" (UTF-8 или Windows-1251), "UTF-8", "CP1251"
   # layout    : "wide"  — строки = периоды, столбцы = факторы
   #             "long"  — строки = факторы, столбцы = периоды
   #                       (первый текстовый столбец — имена факторов)
@@ -408,7 +408,7 @@ dfa_demo <- function(name = "multiplicative") {
 # 4. ЧТЕНИЕ И ПОДГОТОВКА ДАННЫХ
 # =============================================================================
 dfa_read_data <- function(path, sep = "auto", dec = "auto", sheet = 1,
-                          encoding = "UTF-8") {
+                          encoding = "auto") {
   if (!file.exists(path)) stop("Файл не найден: ", path)
   ext <- tolower(tools::file_ext(path))
   if (ext == "rds") return(as.data.frame(readRDS(path)))
@@ -419,6 +419,12 @@ dfa_read_data <- function(path, sep = "auto", dec = "auto", sheet = 1,
       return(openxlsx::read.xlsx(path, sheet = sheet))
     stop("Для Excel установите пакет readxl или openxlsx ",
          "(install.packages('readxl')) либо сохраните файл как CSV.")
+  }
+  if (identical(encoding, "auto") || is.null(encoding)) {
+    # UTF-8, если байты файла корректны в UTF-8, иначе Windows-1251 (старые CSV из Excel)
+    raw <- readBin(path, "raw", n = min(file.size(path), 1e6))
+    raw <- raw[raw != as.raw(0)]
+    encoding <- if (validUTF8(rawToChar(raw))) "UTF-8" else "CP1251"
   }
   con <- file(path, encoding = encoding)
   lines <- tryCatch(readLines(con, n = 5, warn = FALSE), finally = close(con))
@@ -1819,6 +1825,19 @@ dfa_run <- function(cfg = CONFIG) {
 #   dfa_show(res, "waterfall")        — только водопады (поиск по имени)
 #   dfa_show(res, c("tornado", "order"))
 #   dfa_show(res, list = TRUE)        — список доступных графиков
+# Главные графики для экрана:
+#  одна пара периодов — сводная панель, водопад, сравнение методов, порядок подстановки, торнадо;
+#  много периодов — то же за весь срок (TOTAL) + вклад по периодам, динамика, тепловая карта;
+#  объекты — сравнение объектов, тепловая карта, вклад по объектам.
+DFA_KEY_PLOTS <- c("00_dashboard", "01_waterfall", "04_methods", "05_order_sensitivity", "09_tornado")
+dfa_main_plots <- function(nm) {
+  key <- paste0("(^|_)(", paste(DFA_KEY_PLOTS, collapse = "|"), ")$")
+  summary <- nm[grepl("(^|_)(1[0-2]|2[0-2])_", nm)]
+  if (any(grepl("^2[0-2]_", nm))) return(c(nm[grepl("^2[0-2]_", nm)], summary[!grepl("^2[0-2]_", summary)]))
+  if (any(grepl("TOTAL_", nm))) return(c(nm[grepl("TOTAL_", nm) & grepl(key, nm)], summary))
+  c(nm[grepl(key, nm)], summary)
+}
+
 dfa_show <- function(res, which = NULL, mode = "main", list = FALSE) {
   reg <- res$plots
   if (!length(reg)) { message("Графиков нет: запустите анализ с plots = TRUE"); return(invisible(character(0))) }
@@ -1826,7 +1845,7 @@ dfa_show <- function(res, which = NULL, mode = "main", list = FALSE) {
   if (list) { cat(paste0("  ", nm), sep = "\n"); return(invisible(nm)) }
   sel <- if (!is.null(which)) nm[Reduce(`|`, lapply(which, function(w) grepl(w, nm, fixed = TRUE)))]
          else if (identical(mode, "all")) nm
-         else nm[grepl("00_dashboard$|(^|_)1[0-2]_|^2[0-2]_", nm)]
+         else dfa_main_plots(nm)
   if (!length(sel)) sel <- nm[1]
   for (n in sel) {
     if (grDevices::dev.cur() == 1) grDevices::dev.new()
@@ -1867,6 +1886,132 @@ dfa_collect_tables <- function(results, by_group, mdl, cfg) {
 
 # Короткий API: dfa_analyze("Y = a*b", base = c(a=1,b=2), report = c(a=2,b=3))
 #               dfa_analyze("Y = a*b", data = df, ...)
+# =============================================================================
+#  ПРОСТОЙ ЗАПУСК
+#   dfa()                                   — пошаговый мастер (спросит файл, модель ...)
+#   dfa("мои_данные.csv", "Y = a * b")      — сразу расчёт по файлу
+#   dfa(my_df, "Y = a * b", period_col = "year")  — по таблице из R
+# =============================================================================
+dfa <- function(data = NULL, model = NULL, ...) {
+  if (is.null(data) && is.null(model)) return(dfa_wizard())
+  if (is.null(model)) stop("Укажите модель, например: dfa(\"file.csv\", \"Y = a * b\")")
+  cfg <- utils::modifyList(list(demo = NULL, model = model), list(...), keep.null = TRUE)
+  if (is.character(data)) {
+    cfg$data_file <- data
+    if (is.null(cfg$output_dir))
+      cfg$output_dir <- file.path(dirname(normalizePath(data)),
+                                  paste0("DFA_", dfa_safe_name(tools::file_path_sans_ext(basename(data)))))
+  } else cfg$data <- data
+  dfa_run(cfg)
+}
+
+# Пошаговый мастер в консоли (RStudio / RGui). Не требует Tcl/Tk и XQuartz.
+dfa_wizard <- function(path = NULL) {
+  if (!interactive()) stop("Мастер работает только в интерактивной сессии (RStudio, RGui)")
+  line <- function(...) cat(..., "\n", sep = "")
+  ask <- function(prompt) trimws(readline(prompt))
+  hr <- function(title) line("\n", strrep("─", 70), "\n", title, "\n", strrep("─", 70))
+  owidth <- options(width = 200); on.exit(options(owidth))
+
+  # ---- 1. файл ----
+  hr("Шаг 1 из 5. Файл с данными")
+  if (is.null(path)) {
+    line("Сейчас откроется окно выбора файла (CSV из Excel, XLSX, TXT).")
+    line("Формат: одна строка = один период, один столбец = один фактор. Первая строка — названия столбцов.")
+    path <- tryCatch(file.choose(), error = function(e) "")
+  }
+  if (!nzchar(path)) { line("Файл не выбран — выходим."); return(invisible(NULL)) }
+  df <- tryCatch(dfa_read_data(path), error = function(e) e)
+  if (inherits(df, "error")) { line("Не удалось прочитать файл: ", conditionMessage(df)); return(invisible(NULL)) }
+  line("Файл: ", path)
+  line("Строк: ", nrow(df), ", столбцов: ", ncol(df), ". Первые строки:\n")
+  print(utils::head(df, 10), row.names = FALSE)
+  num <- names(df)[vapply(df, is.numeric, logical(1))]
+  chr <- setdiff(names(df), num)
+  if (!length(num)) { line("\nВ файле нет числовых столбцов. Проверьте разделитель и десятичную запятую."); return(invisible(NULL)) }
+
+  # ---- 2. периоды ----
+  hr("Шаг 2 из 5. Периоды")
+  period_col <- NULL
+  if (length(chr)) {
+    k <- utils::menu(c(paste0("«", chr, "»  (", vapply(chr, function(c) paste(utils::head(unique(as.character(df[[c]])), 4), collapse = ", "), ""), " …)"),
+                       "нет такого столбца — периоды идут по порядку строк"),
+                     title = "Какой столбец содержит периоды (План/Факт, годы, месяцы)?")
+    if (k >= 1 && k <= length(chr)) period_col <- chr[k]
+  } else line("Текстовых столбцов нет — периоды идут по порядку строк (1-я строка — база).")
+
+  # ---- 3. объекты ----
+  group_col <- NULL
+  rest <- setdiff(chr, period_col)
+  if (length(rest)) {
+    hr("Шаг 3 из 5. Объекты (филиалы, магазины, товары)")
+    k <- utils::menu(c(paste0("«", rest, "»"), "нет — один объект"),
+                     title = "Есть ли столбец с объектами, по каждому из которых нужен отдельный анализ?")
+    if (k >= 1 && k <= length(rest)) group_col <- rest[k]
+  }
+  n_per <- if (!is.null(group_col)) max(table(df[[group_col]])) else nrow(df)
+  compare <- "auto"
+  if (n_per > 2) {
+    k <- utils::menu(c("каждый период с предыдущим (цепная схема) + итог за весь срок",
+                       "только первый период с последним",
+                       "каждый период с первым (базисная схема)"),
+                     title = sprintf("Периодов %d. Как сравнивать?", n_per))
+    compare <- c("chain", "first_last", "fixed_base")[max(k, 1)]
+  }
+
+  # ---- 4. модель ----
+  hr("Шаг 4 из 5. Модель")
+  line("Числовые столбцы вашего файла: ", paste(num, collapse = ", "))
+  line("Запишите, как результат считается из факторов. Примеры:")
+  line("   V = CR * D * P * CV            выручка = численность × дни × часы × выработка")
+  line("   PR = Q * (Pr - V) - FC         прибыль = объём × (цена − перем. затраты) − пост. затраты")
+  line("   R = P / (F + E) * 100          рентабельность, %")
+  line("   C = M + W + A + O              себестоимость = сумма статей")
+  line("Названия — точно как в заголовках столбцов (регистр важен). Пустая строка — выход.")
+  repeat {
+    m <- ask("Модель: ")
+    if (!nzchar(m)) { line("Отменено."); return(invisible(NULL)) }
+    mdl <- tryCatch(dfa_parse_model(m), error = function(e) e)
+    if (inherits(mdl, "error")) { line("  Ошибка в формуле: ", conditionMessage(mdl)); next }
+    miss <- setdiff(mdl$factors, names(df))
+    if (length(miss)) { line("  В файле нет столбцов: ", paste(miss, collapse = ", "), ". Есть: ", paste(num, collapse = ", ")); next }
+    line("  ✓ ", DFA_MODEL_TYPES[mdl$type], "; факторы: ", paste(mdl$factors, collapse = ", "))
+    break
+  }
+
+  # ---- 5. подписи ----
+  hr("Шаг 5 из 5. Названия для отчёта и графиков")
+  labels <- c(); resp <- NULL
+  k <- utils::menu(c("да, введу русские названия", "нет, оставить как есть"),
+                   title = "Ввести понятные названия показателей (например «Цена, руб.»)?")
+  if (k == 1) {
+    resp <- ask(sprintf("%s (результат) = ", mdl$response)); if (!nzchar(resp)) resp <- NULL
+    for (f in mdl$factors) { v <- ask(sprintf("%s = ", f)); if (nzchar(v)) labels[f] <- v }
+  }
+
+  # ---- расчёт ----
+  out_dir <- file.path(dirname(normalizePath(path)), paste0("DFA_", dfa_safe_name(tools::file_path_sans_ext(basename(path)))))
+  cfg <- list(demo = NULL, data_file = normalizePath(path), model = m, period_col = period_col,
+              group_col = group_col, auto_group = FALSE, compare = compare,
+              factor_labels = labels, response_label = resp, output_dir = out_dir)
+  hr("Расчёт")
+  res <- dfa_run(cfg)
+  full <- utils::modifyList(CONFIG, cfg, keep.null = TRUE)
+  tryCatch({
+    dfa_config_write(full, file.path(out_dir, "settings.R"), include_data = FALSE)
+    if (file.exists("deterministic_factor_analysis.R"))
+      dfa_config_write(full, "last_analysis.R", include_data = FALSE)
+  }, error = function(e) NULL)
+  assign("res", res, envir = globalenv())
+  hr("Готово")
+  line("Результаты: ", normalizePath(out_dir))
+  line("  • dfa_report.txt — отчёт с выводами;  • dfa_plots.pdf — все графики;  • tables — таблицы для Excel")
+  line("Графики на экране: вкладка Plots (стрелки ← →). Снова: dfa_show(res);  все: dfa_show(res, mode = \"all\")")
+  line("Настройки сохранены в settings.R — повторить расчёт: dfa_run(dfa_config_read(\"", file.path(out_dir, "settings.R"), "\"))")
+  if (utils::menu(c("да", "нет"), title = "Открыть папку с результатами?") == 1) utils::browseURL(normalizePath(out_dir))
+  invisible(res)
+}
+
 dfa_analyze <- function(model, data = NULL, base = NULL, report = NULL, ...) {
   cfg <- utils::modifyList(CONFIG, list(...), keep.null = TRUE)
   cfg$model <- model; cfg$demo <- NULL
@@ -1945,7 +2090,7 @@ dfa_gui_fields <- function() {
     F("data_file", "data", "file", "Файл данных", hint = "CSV, TXT, XLSX, XLS, RDS"),
     F("sep", "data", "combo", "Разделитель CSV", c("auto", ";", ",", "\\t", "|"), "auto — определить"),
     F("dec", "data", "combo", "Десятичный знак", c("auto", ",", "."), ""),
-    F("encoding", "data", "combo", "Кодировка", c("UTF-8", "CP1251", "latin1"), "CP1251 — старые файлы Excel"),
+    F("encoding", "data", "combo", "Кодировка", c("auto", "UTF-8", "CP1251", "latin1"), "auto — определить самому"),
     F("sheet", "data", "text", "Лист Excel", hint = "номер или имя"),
     F("layout", "data", "combo", "Расположение", c("auto", "wide", "long"), "wide: строки=периоды; long: строки=факторы"),
     F("period_col", "data", "combo_edit", "Столбец периодов", hint = "пусто — по порядку строк"),

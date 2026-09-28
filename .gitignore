@@ -3,3 +3,6 @@ dfa_output/
 .RData
 dfa_random_test/
 dfa_my_results/
+Rplots*.pdf
+last_analysis.R
+DFA_*/
