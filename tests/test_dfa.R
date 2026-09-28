@@ -74,6 +74,27 @@ for (f in fl) if (f$type != "checks") {
 }
 chk("GUI: поля конвертируются без потерь", ok)
 
+# Регрессия по итогам аудита
+r <- an("Y = 3 * a", base = c(a = 2), report = c(a = 5))
+chk("один фактор: влияние = ΔY",       abs(r$effects["a", "chain"] - 9) < 1e-12)
+chk("формат: малые числа не «0,00»",   dfa_fmt(0.000123, 2) == "0,000123")
+chk("формат: digits = 0 не портится",  dfa_fmt(5, 0) == "5")
+chk("формат: обычные числа",           dfa_fmt(1234.567, 2) == "1 234,57")
+chk("числа из Excel: 1 234,5 / 12,5% / (1 234) / −5",
+    isTRUE(all.equal(dfa_parse_num(c("1 234,5", "12,5%", "(1 234)", "−5")), c(1234.5, 12.5, -1234, -5))))
+e1 <- an("Y = k*a*b", base = c(a = 2, b = 3), report = c(a = 3, b = 5), constants = list(k = 1))$effects[, "shapley"]
+e2 <- an("Y = k*a*b", base = c(a = 2, b = 3), report = c(a = 3, b = 5), constants = list(k = 10))$effects[, "shapley"]
+chk("кэш: смена константы учитывается", isTRUE(all.equal(e2, 10 * e1)))
+set.seed(1); u1 <- runif(1); set.seed(1)
+invisible(an(paste("Y =", paste0("x", 1:9, collapse = "*")), base = setNames(1:9, paste0("x", 1:9)), report = setNames(2:10, paste0("x", 1:9))))
+chk("RNG пользователя не меняется",    runif(1) == u1)
+tm <- system.time(r <- an(paste("Y =", paste0("x", 1:8, collapse = "*")), base = setNames(1:8, paste0("x", 1:8)),
+                          report = setNames(2:9, paste0("x", 1:8))))[3]
+chk("8 факторов: быстро (< 10 с)",     tm < 10 && r$orders$full && nrow(r$orders$matrix) == 40320)
+chk("8 факторов: Шепли = среднее 8!",  isTRUE(all.equal(unname(colMeans(r$orders$matrix)), unname(r$effects[, "shapley"]))))
+err <- tryCatch(dfa_prepare_data(data.frame(period = 1:2, q = 1:2, price = 1:2), c("Q", "Pr"), CONFIG), error = function(e) conditionMessage(e))
+chk("подсказка похожих столбцов",      grepl("Q → «q»", err) && grepl("Pr → «price»", err))
+
 # Все демо запускаются
 for (d in c("multiplicative", "multiple", "mixed", "additive", "dupont", "groups", "custom")) {
   res <- tryCatch(dfa_run(c(list(demo = d), q)), error = function(e) NULL)

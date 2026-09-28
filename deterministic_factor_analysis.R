@@ -224,6 +224,10 @@ dfa_fmt <- function(x, digits = 2, cfg = NULL, sign = FALSE) {
   out <- rep("—", length(x))
   ok <- is.finite(x)
   if (any(ok)) {
+    # маленькие числа (0,00012) не превращаем в «0,00»: добавляем знаков до 3 значащих цифр
+    mx <- max(abs(x[ok]))
+    thr <- if (digits == 0) 1 else 10^(1 - digits)
+    if (mx > 0 && mx < thr) digits <- min(10, max(digits, 2 - floor(log10(mx))))
     s <- formatC(round(x[ok], digits), format = "f", digits = digits,
                  big.mark = bm, decimal.mark = dm)
     if (sign) s <- ifelse(x[ok] > 0, paste0("+", s), s)
@@ -257,13 +261,57 @@ dfa_wrap <- function(x, width = 18)
 
 # Все перестановки вектора (для k <= 8 это до 40 320 строк)
 dfa_permutations <- function(v) {
-  if (length(v) <= 1) return(matrix(v, nrow = 1))
-  out <- NULL
-  for (i in seq_along(v)) {
-    sub <- dfa_permutations(v[-i])
-    out <- rbind(out, cbind(v[i], sub))
+  k <- length(v)
+  if (k <= 1) return(matrix(v, nrow = 1))
+  P <- matrix(1L, 1, 1)
+  for (n in 2:k) {           # вставляем n на каждую позицию: k! строк без рекурсии
+    m <- nrow(P)
+    P <- do.call(rbind, lapply(seq_len(n), function(pos)
+      cbind(P[, seq_len(pos - 1), drop = FALSE], rep(n, m), P[, seq_len(n - 1) >= pos, drop = FALSE])))
   }
-  unname(out)
+  matrix(v[P], nrow = nrow(P))
+}
+
+# Значения модели на всех 2^k комбинациях «фактор на базе / на отчёте».
+# vals[mask + 1], бит i маски = фактор i на отчётном уровне. Кэшируется.
+.dfa_cache <- new.env()
+.dfa_cache$counter <- 0
+dfa_new_uid <- function() { .dfa_cache$counter <- .dfa_cache$counter + 1; paste0("m", .dfa_cache$counter) }
+
+# Выполнить expr с заданным seed, не трогая генератор случайных чисел пользователя
+dfa_with_seed <- function(seed, expr) {
+  had <- exists(".Random.seed", envir = globalenv(), inherits = FALSE)
+  if (had) old <- get(".Random.seed", envir = globalenv())
+  on.exit(if (had) assign(".Random.seed", old, envir = globalenv())
+          else if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) rm(".Random.seed", envir = globalenv()))
+  set.seed(seed)
+  expr
+}
+dfa_subset_values <- function(mdl, x0, x1) {
+  f <- mdl$factors; k <- length(f)
+  key <- paste(mdl$uid %||% mdl$text, paste(format(c(x0[f], x1[f]), digits = 17), collapse = ","))
+  if (!is.null(.dfa_cache$key) && identical(.dfa_cache$key, key)) return(.dfa_cache$vals)
+  n <- 2^k
+  vals <- numeric(n)
+  bitsm <- outer(0:(n - 1), 2^(0:(k - 1)), function(m, b) (m %/% b) %% 2 == 1)
+  for (m in seq_len(n)) {
+    x <- x0[f]; x[bitsm[m, ]] <- x1[f][bitsm[m, ]]
+    vals[m] <- mdl$fn(x)
+  }
+  .dfa_cache$key <- key; .dfa_cache$vals <- vals
+  vals
+}
+
+# Влияния для набора порядков (матрица индексов факторов) по таблице подмножеств
+dfa_orders_effects <- function(P, vals, k) {
+  out <- matrix(0, nrow(P), k)
+  cum <- numeric(nrow(P))
+  for (j in seq_len(k)) {
+    b <- 2^(P[, j] - 1)
+    out[cbind(seq_len(nrow(P)), P[, j])] <- vals[cum + b + 1] - vals[cum + 1]
+    cum <- cum + b
+  }
+  out
 }
 
 # Узлы и веса Гаусса—Лежандра на [0, 1] (алгоритм Голуба—Уэлша)
@@ -441,14 +489,29 @@ dfa_read_data <- function(path, sep = "auto", dec = "auto", sheet = 1,
                           fileEncoding = encoding, comment.char = "",
                           strip.white = TRUE)
   names(df) <- sub("^﻿", "", names(df))
-  # Числа с пробелами-разделителями тысяч и запятой: "1 234,5"
+  # Числа в виде текста из Excel: "1 234,5", "12,5%", "(1 234)", "−5"
   for (j in seq_along(df)) if (is.character(df[[j]])) {
-    s <- gsub("[  ]", "", df[[j]])
-    s2 <- if (dec == ",") gsub(",", ".", s, fixed = TRUE) else s
-    num <- suppressWarnings(as.numeric(s2))
-    if (all(is.na(num) == (is.na(df[[j]]) | df[[j]] == ""))) df[[j]] <- num
+    num <- dfa_parse_num(df[[j]], dec)
+    if (all(is.na(num) == (is.na(df[[j]]) | trimws(df[[j]]) == ""))) df[[j]] <- num
   }
   df
+}
+
+# Текст -> число: пробелы и неразрывные пробелы в тысячах, десятичная запятая,
+# знак процента (12,5% -> 12.5), бухгалтерский минус (1 234) -> -1234, типографский минус «−»
+dfa_parse_num <- function(x, dec = "auto") {
+  s <- trimws(as.character(x))
+  s <- gsub("[\u00a0\u2007\u202f\u2009 ']", "", s)
+  s <- gsub("[\u2212\u2013\u2014]", "-", s)
+  neg <- grepl("^\\(.*\\)$", s); s <- gsub("^\\((.*)\\)$", "\\1", s)
+  s <- sub("%$", "", s)
+  comma_dec <- identical(dec, ",") ||
+    (identical(dec, "auto") && any(grepl(",", s, fixed = TRUE), na.rm = TRUE) &&
+       !any(grepl(",[0-9]{3}(\\.|,|$)", s) & grepl("\\.", s), na.rm = TRUE))
+  if (comma_dec) { s <- gsub(".", "", s, fixed = TRUE); s <- gsub(",", ".", s, fixed = TRUE) }
+  else s <- gsub(",", "", s, fixed = TRUE)
+  v <- suppressWarnings(as.numeric(s))
+  ifelse(neg, -v, v)
 }
 
 # Приводит данные к виду «строки = периоды, столбцы = факторы»
@@ -478,11 +541,25 @@ dfa_prepare_data <- function(df, factors, cfg) {
     df <- wide
   }
   miss <- setdiff(factors, names(df))
-  if (length(miss)) stop("В данных нет столбцов для факторов: ", paste(miss, collapse = ", "),
-                         ".\nСтолбцы в данных: ", paste(names(df), collapse = ", "))
+  if (length(miss)) {
+    hint <- unlist(lapply(miss, function(m) {
+      nm <- names(df); lm <- tolower(m); ln <- tolower(nm)
+      cand <- nm[ln == lm]                                           # отличие только в регистре
+      if (!length(cand)) cand <- nm[startsWith(ln, lm) | startsWith(lm, ln)]  # начало слова
+      if (!length(cand)) { d <- utils::adist(lm, ln)[1, ]; if (min(d) <= 2) cand <- nm[which.min(d)] }
+      if (length(cand)) paste0(m, " → «", cand[1], "»?") }))
+    stop("В данных нет столбцов для факторов: ", paste(miss, collapse = ", "),
+         ".\nСтолбцы в данных: ", paste(names(df), collapse = ", "),
+         if (length(hint)) paste0("\nВозможно, имелось в виду: ", paste(hint, collapse = "; "),
+                                  " (названия в модели и в таблице должны совпадать, включая регистр)"))
+  }
   for (f in factors) if (!is.numeric(df[[f]])) {
-    v <- suppressWarnings(as.numeric(gsub(",", ".", gsub("[  ]", "", df[[f]]))))
-    if (all(is.na(v))) stop("Фактор '", f, "' не является числовым.")
+    raw <- as.character(df[[f]])
+    v <- dfa_parse_num(raw)
+    badv <- is.na(v) & !is.na(raw) & nzchar(trimws(raw))
+    if (any(badv)) stop("В столбце '", f, "' есть значения, которые не являются числами: ",
+                        paste0("«", utils::head(unique(raw[badv]), 5), "»", collapse = ", "),
+                        " (строки таблицы ", paste(utils::head(which(badv), 5), collapse = ", "), ")")
     df[[f]] <- v
   }
   bad <- !stats::complete.cases(df[, factors, drop = FALSE])
@@ -490,8 +567,12 @@ dfa_prepare_data <- function(df, factors, cfg) {
     if (identical(cfg$na_action, "omit")) {
       warning("Удалено строк с пропусками: ", sum(bad))
       df <- df[!bad, , drop = FALSE]
-    } else stop("В данных есть пропуски (NA) в строках: ", paste(which(bad), collapse = ", "),
-                ". Установите na_action = 'omit' или заполните данные.")
+    } else {
+      nac <- factors[vapply(factors, function(f) anyNA(df[[f]]), logical(1))]
+      stop("В данных есть пустые ячейки: столбцы ", paste(nac, collapse = ", "),
+           "; строки таблицы ", paste(which(bad), collapse = ", "),
+           ". Заполните их или установите na_action = 'omit' (строки с пропусками будут удалены).")
+    }
   }
   if (is.null(cfg$period_col)) {
     guess <- intersect(c("period", "Period", "период", "Период", "year", "год", "Год",
@@ -534,7 +615,7 @@ dfa_parse_model <- function(model, submodels = list(), constants = list(),
       return(dfa_parse_model(call("~", as.name(response_name), b), submodels, constants, response_name, cfg))
     user_fn <- model
     fn <- function(x) do.call(user_fn, as.list(x[args]))
-    return(list(expr = NULL, text = paste0(response_name, " = f(", paste(args, collapse = ", "), ")"),
+    return(list(uid = dfa_new_uid(), expr = NULL, text = paste0(response_name, " = f(", paste(args, collapse = ", "), ")"),
                 response = response_name, factors = args, fn = fn, type = "black_box",
                 constants = constants, pp = NULL, linear = NULL, groups = list(),
                 grad = NULL))
@@ -590,7 +671,7 @@ dfa_parse_model <- function(model, submodels = list(), constants = list(),
     if (is_kr) "multiple" else "mixed"
   }
   grad <- dfa_make_gradient(rhs, factors, constants, env, cfg)
-  list(expr = rhs, text = paste(lhs, "=", paste(deparse(rhs, width.cutoff = 500), collapse = " ")),
+  list(uid = dfa_new_uid(), expr = rhs, text = paste(lhs, "=", paste(deparse(rhs, width.cutoff = 500), collapse = " ")),
        response = lhs, factors = factors, fn = fn, type = type, constants = constants,
        pp = pp, linear = linear, groups = dfa_find_sum_groups(rhs, factors, constants),
        grad = grad, env = env)
@@ -877,6 +958,17 @@ dfa_integral <- function(mdl, x0, x1, ord, cfg) {
     acc <- acc + gl$w[q] * g[mdl$factors]
   }
   eff <- acc * dx[mdl$factors]
+  dy <- mdl$fn(x1) - mdl$fn(x0)
+  if (abs(sum(eff) - dy) > 1e-6 * max(abs(dy), abs(mdl$fn(x0)), abs(mdl$fn(x1)), 1)) {
+    # модель по пути от базы к отчёту проходит через разрыв (знаменатель меняет знак и т.п.)
+    ts <- seq(0, 1, length.out = 401)
+    ys <- vapply(ts, function(t) tryCatch(mdl$fn(x0 + t * dx), error = function(e) NA_real_), numeric(1))
+    return(list(effects = NULL, note = paste0(
+      "Интеграл не существует: на пути от базы к отчёту модель ",
+      if (any(!is.finite(ys)) || any(diff(sign(ys)) != 0 & abs(ys[-1]) > 10 * max(abs(c(ys[1], ys[401]))))) "проходит через разрыв (деление на число, меняющее знак)"
+      else "ведёт себя слишком резко для численного интегрирования",
+      ". Используйте цепные подстановки или Шепли.")))
+  }
   list(effects = eff, details = NULL,
        note = paste0("Производные: ", mdl$grad$type, "; узлов квадратуры: ", length(gl$t)))
 }
@@ -905,24 +997,18 @@ dfa_shapley <- function(mdl, x0, x1, ord, cfg) {
   f <- mdl$factors; k <- length(f)
   if (k > (cfg$max_shapley_factors %||% 16))
     return(list(effects = NULL, note = paste0("Слишком много факторов (", k, ") для точного расчёта 2^k.")))
-  n <- 2^k
-  vals <- numeric(n)
-  for (m in 0:(n - 1)) {
-    bits <- bitwAnd(m, 2^(0:(k - 1))) > 0
-    x <- x0; x[f[bits]] <- x1[f[bits]]
-    vals[m + 1] <- mdl$fn(x)
-  }
-  w <- factorial(0:(k - 1)) * factorial((k - 1):0) / factorial(k)
+  vals <- dfa_subset_values(mdl, x0, x1)
+  n <- 2^k; masks <- 0:(n - 1)
+  size <- rowSums(outer(masks, 2^(0:(k - 1)), function(m, b) (m %/% b) %% 2 == 1))
+  w <- ifelse(size < k, factorial(size) * factorial(pmax(k - size - 1, 0)) / factorial(k), 0)  # вес подмножества без фактора i
   eff <- stats::setNames(numeric(k), f)
   for (i in seq_len(k)) {
     bi <- 2^(i - 1)
-    for (m in 0:(n - 1)) if (bitwAnd(m, bi) == 0) {
-      s <- sum(bitwAnd(m, 2^(0:(k - 1))) > 0)
-      eff[i] <- eff[i] + w[s + 1] * (vals[m + bi + 1] - vals[m + 1])
-    }
+    without <- masks[(masks %/% bi) %% 2 == 0]
+    eff[i] <- sum(w[without + 1] * (vals[without + bi + 1] - vals[without + 1]))
   }
   list(effects = eff, details = NULL,
-       note = paste0("Среднее по всем ", factorial(k), " порядкам подстановки; от порядка не зависит."))
+       note = paste0("Среднее по всем ", format(factorial(k), big.mark = " "), " порядкам подстановки; от порядка не зависит."))
 }
 
 # ---- 6.8 Пропорционального деления (долевого участия) -----------------------
@@ -985,13 +1071,18 @@ dfa_methods_registry <- list(chain = dfa_chain, abs_diff = dfa_abs_diff, rel_dif
 dfa_all_orders <- function(mdl, x0, x1, cfg) {
   f <- mdl$factors; k <- length(f)
   if (k > (cfg$max_full_orders %||% 8)) {
-    set.seed(cfg$seed %||% 42)
-    perms <- t(replicate(cfg$n_random_orders %||% 5000, sample(f)))
+    P <- dfa_with_seed(cfg$seed %||% 42, t(replicate(cfg$n_random_orders %||% 5000, sample.int(k))))
+    ord_idx <- match(dfa_resolve_order(mdl, cfg), f)       # выбранный порядок всегда в выборке
+    P <- unique(rbind(ord_idx, P)); rownames(P) <- NULL
     full <- FALSE
-  } else { perms <- dfa_permutations(f); full <- TRUE }
-  m <- t(apply(perms, 1, function(o) dfa_chain(mdl, x0, x1, o, cfg)$effects))
-  if (k == 1) m <- matrix(m, ncol = 1)
-  colnames(m) <- f
+  } else { P <- dfa_permutations(seq_len(k)); full <- TRUE }
+  if (k <= (cfg$max_shapley_factors %||% 16)) {
+    m <- dfa_orders_effects(P, dfa_subset_values(mdl, x0, x1), k)
+  } else {
+    m <- t(apply(P, 1, function(o) dfa_chain(mdl, x0, x1, f[o], cfg)$effects[f]))
+  }
+  m <- matrix(m, ncol = k, dimnames = list(NULL, f))
+  perms <- matrix(f[P], nrow = nrow(P))
   list(matrix = m, orders = apply(perms, 1, paste, collapse = "→"), full = full,
        summary = data.frame(factor = f, min = apply(m, 2, min), max = apply(m, 2, max),
                             mean = colMeans(m), sd = if (nrow(m) > 1) apply(m, 2, stats::sd) else 0,
@@ -1097,7 +1188,7 @@ dfa_labels <- function(f, cfg) {
 # =============================================================================
 dfa_conclusions <- function(r, cfg) {
   if (is.null(r$main_method)) return("Ни один метод не применим к данной модели/данным.")
-  e <- r$effects[, r$main_method]
+  e <- stats::setNames(r$effects[, r$main_method], rownames(r$effects))
   lab <- dfa_labels(names(e), cfg)
   ylab <- cfg$response_label %||% r$model$response
   txt <- character(0)
@@ -1257,7 +1348,24 @@ dfa_write_csv <- function(df, path, cfg) {
 # =============================================================================
 dfa_alpha <- function(col, a) grDevices::adjustcolor(col, alpha.f = a)
 
-dfa_ylab_fmt <- function(cfg) function(v) dfa_fmt(v, if (max(abs(v), na.rm = TRUE) >= 100) 0 else cfg$digits, cfg)
+# Подписи делений оси: столько знаков, сколько нужно, чтобы деления различались
+dfa_ylab_fmt <- function(cfg) function(v) {
+  v <- v[is.finite(v)]
+  st <- if (length(v) > 1) min(diff(sort(unique(v)))) else abs(v[1])
+  d <- if (!is.finite(st) || st <= 0) cfg$digits else max(0, min(10, ceiling(-log10(st) - 1e-9)))
+  if (st >= 1) d <- 0
+  s <- formatC(round(v, d), format = "f", digits = d, big.mark = cfg$big_mark %||% " ", decimal.mark = cfg$decimal_mark %||% ",")
+  s
+}
+
+# Подписи слева у горизонтальных графиков: все подписи, шрифт уменьшается, чтобы они не слипались
+dfa_hlabels <- function(at, labels, cex = 0.8) {
+  pin_h <- graphics::par("pin")[2]; usr <- graphics::par("usr")[3:4]
+  slot <- if (length(at) > 1) min(diff(sort(at))) * pin_h / abs(diff(usr)) else pin_h
+  nl <- max(lengths(strsplit(labels, "\n")))
+  cexf <- max(0.45, min(cex, 0.95 * slot / (nl * graphics::par("csi"))))
+  graphics::mtext(labels, side = 2, at = at, las = 1, line = 0.4, cex = cexf, adj = 1)
+}
 
 # Перенос подписей оси X по доступной ширине одного столбца (в дюймах)
 dfa_fit_labels <- function(labels, n, cex = 0.72, side_in = 1.4) {
@@ -1282,7 +1390,7 @@ dfa_subtitle <- function(r, cfg)
 
 # ---- Каскадная диаграмма (водопад) --------------------------------------------
 dfa_plot_waterfall <- function(r, cfg, method = r$main_method) {
-  e <- r$effects[, method]
+  e <- stats::setNames(r$effects[, method], rownames(r$effects))
   n <- length(e) + 2
   lab <- dfa_fit_labels(c(paste0(cfg$response_label %||% r$model$response, "\n", r$base_name),
                           dfa_labels(names(e), cfg),
@@ -1311,27 +1419,28 @@ dfa_plot_waterfall <- function(r, cfg, method = r$main_method) {
     graphics::rect(i - w, min(bars[i, ]), i + w, max(bars[i, ]), col = cols[i], border = NA)
     if (i < n) graphics::segments(i + w, lv[i], i + 1 - w, lv[i], lty = 3, col = cfg$colors$neutral)
     val <- if (i %in% c(1, n)) dfa_fmt(bars[i, 2], cfg$digits, cfg) else dfa_fmt(e[i - 1], cfg$digits, cfg, TRUE)
-    graphics::text(i, max(bars[i, ]), val, pos = 3, cex = 0.75 * cfg$base_font, col = cfg$colors$text, xpd = TRUE)
+    graphics::text(i, max(bars[i, ]), val, pos = 3, cex = min(0.75, 6.5 / n) * cfg$base_font, col = cfg$colors$text, xpd = TRUE)
   }
-  if (!isTRUE(from0)) graphics::mtext("ось Y не начинается с нуля", side = 2, line = 4.2, cex = 0.6, col = cfg$colors$neutral)
+  if (!isTRUE(from0)) graphics::mtext("ось Y не начинается с нуля", side = 3, adj = 1, line = 0.1, cex = 0.6, col = cfg$colors$neutral)
   graphics::mtext(lab, side = 1, at = seq_len(n), line = 0.4, padj = 1, cex = 0.72 * cfg$base_font)
 }
 
 # ---- Влияние факторов (горизонтальные столбики) ------------------------------
 dfa_plot_effects <- function(r, cfg, method = r$main_method, shares = FALSE) {
-  e <- r$effects[, method]
+  e <- stats::setNames(r$effects[, method], rownames(r$effects))
   v <- if (shares) dfa_safe_div(e, r$dy) * 100 else e
   if (all(!is.finite(v))) { graphics::plot.new(); graphics::title("ΔY = 0 — доли не определены"); return(invisible()) }
   o <- order(abs(v)); v <- v[o]
   lab <- dfa_wrap(dfa_labels(names(v), cfg), cfg$label_wrap + 10)
   op <- graphics::par(mai = c(0.9, dfa_left_margin(lab, 0.8), 0.9, 0.5)); on.exit(graphics::par(op))
   xr <- range(0, v, na.rm = TRUE); xr <- xr + c(-1, 1) * diff(xr) * 0.18
-  bp <- graphics::barplot(v, horiz = TRUE, names.arg = lab, las = 1, xlim = xr, border = NA,
+  bp <- graphics::barplot(v, horiz = TRUE, names.arg = rep("", length(v)), las = 1, xlim = xr, border = NA,
                           col = ifelse(v >= 0, cfg$colors$positive, cfg$colors$negative),
                           cex.names = 0.8 * cfg$base_font, axes = FALSE,
                           main = paste(if (shares) "Структура влияния факторов, % от ΔY" else "Влияние факторов на результат (ΔY)",
                                        "\n", dfa_subtitle(r, cfg)), cex.main = 0.95 * cfg$base_font)
   dfa_grid_v(cfg)
+  dfa_hlabels(bp, lab, 0.8 * cfg$base_font)
   graphics::barplot(v, horiz = TRUE, add = TRUE, names.arg = rep("", length(v)), border = NA, axes = FALSE,
                     col = ifelse(v >= 0, cfg$colors$positive, cfg$colors$negative))
   at <- pretty(xr); graphics::axis(1, at = at, labels = dfa_ylab_fmt(cfg)(at), cex.axis = 0.8)
@@ -1375,12 +1484,11 @@ dfa_plot_order <- function(r, cfg) {
                  cex.main = 0.95 * cfg$base_font)
   dfa_grid_v(cfg); graphics::abline(v = 0)
   at <- pretty(xr); graphics::axis(1, at = at, labels = dfa_ylab_fmt(cfg)(at), cex.axis = 0.8)
-  graphics::axis(2, at = seq_len(k), labels = lab, las = 1, cex.axis = 0.8, tick = FALSE)
-  set.seed(1)
+  dfa_hlabels(seq_len(k), lab)
   for (i in seq_len(k)) {
     graphics::segments(s$min[i], i, s$max[i], i, lwd = 6, col = dfa_alpha(cfg$colors$neutral, 0.35))
     u <- unique(round(m[, i], 10))
-    graphics::points(u, i + stats::runif(length(u), -0.15, 0.15), pch = 16, cex = 0.5, col = dfa_alpha(cfg$colors$total, 0.35))
+    graphics::points(u, i + ((seq_along(u) * 0.618034) %% 1 - 0.5) * 0.3, pch = 16, cex = 0.5, col = dfa_alpha(cfg$colors$total, 0.35))
   }
   graphics::points(s$mean, seq_len(k), pch = 23, bg = cfg$colors$positive, cex = 1.4)
   if ("chain" %in% r$ok_methods) graphics::points(r$effects[f, "chain"], seq_len(k), pch = 24, bg = "#F2C14E", cex = 1.3)
@@ -1410,7 +1518,7 @@ dfa_plot_chain_steps <- function(r, cfg) {
   cols <- c(cfg$colors$total, ifelse(diff(st$y) >= 0, cfg$colors$positive, cfg$colors$negative))
   cols[n] <- cfg$colors$total
   graphics::points(seq_len(n), st$y, pch = 21, bg = cols, cex = 1.8)
-  graphics::text(seq_len(n), st$y, dfa_fmt(st$y, cfg$digits, cfg), pos = 3, cex = 0.72 * cfg$base_font, offset = 0.8)
+  graphics::text(seq_len(n), st$y, dfa_fmt(st$y, cfg$digits, cfg), pos = 3, cex = min(0.72, 6.5 / n) * cfg$base_font, offset = 0.8)
   graphics::mtext(lab, side = 1, at = seq_len(n), line = 0.4, padj = 1, cex = 0.72 * cfg$base_font)
 }
 
@@ -1423,10 +1531,11 @@ dfa_plot_dynamics <- function(r, cfg) {
   gv <- ifelse(is.finite(g), g, 0)
   xr <- range(0, gv); xr <- xr + c(-1, 1) * max(diff(xr), 1) * 0.2
   cols <- ifelse(gv >= 0, cfg$colors$positive, cfg$colors$negative); cols[length(cols)] <- cfg$colors$total
-  bp <- graphics::barplot(rev(gv), horiz = TRUE, names.arg = rev(lab), las = 1, col = rev(cols), border = NA, xlim = xr,
+  bp <- graphics::barplot(rev(gv), horiz = TRUE, names.arg = rep("", length(gv)), las = 1, col = rev(cols), border = NA, xlim = xr,
                           cex.names = 0.8 * cfg$base_font, axes = FALSE,
                           main = paste("Темпы прироста факторов и результата, %\n", dfa_subtitle(r, cfg)), cex.main = 0.95 * cfg$base_font)
   dfa_grid_v(cfg)
+  dfa_hlabels(bp, rev(lab), 0.8 * cfg$base_font)
   graphics::barplot(rev(gv), horiz = TRUE, add = TRUE, col = rev(cols), border = NA, axes = FALSE, names.arg = rep("", length(gv)))
   graphics::axis(1, cex.axis = 0.8); graphics::abline(v = 0)
   graphics::text(rev(gv), bp, rev(dfa_pct(g, cfg, TRUE)), pos = ifelse(rev(gv) >= 0, 4, 2), cex = 0.75, xpd = TRUE)
@@ -1440,12 +1549,12 @@ dfa_plot_elasticity <- function(r, cfg) {
   lab <- dfa_wrap(names(v), cfg$label_wrap + 10)
   op <- graphics::par(mai = c(0.9, dfa_left_margin(lab, 0.8), 0.9, 0.5)); on.exit(graphics::par(op))
   xr <- range(0, v); xr <- xr + c(-1, 1) * max(diff(xr), 0.1) * 0.2
-  bp <- graphics::barplot(v, horiz = TRUE, names.arg = lab, las = 1, border = NA, xlim = xr, cex.names = 0.8,
+  bp <- graphics::barplot(v, horiz = TRUE, names.arg = rep("", length(v)), las = 1, border = NA, xlim = xr, cex.names = 0.8,
                           col = ifelse(v >= 0, cfg$colors$positive, cfg$colors$negative), axes = FALSE,
                           main = paste0("Эластичность результата по факторам (точка: ",
                                         if (identical(cfg$sensitivity_point, "report")) r$report_name else r$base_name, ")\n",
                                         "на сколько % изменится Y при росте фактора на 1%"), cex.main = 0.95 * cfg$base_font)
-  dfa_grid_v(cfg); graphics::axis(1, cex.axis = 0.8); graphics::abline(v = 0)
+  dfa_grid_v(cfg); dfa_hlabels(bp, lab, 0.8 * cfg$base_font); graphics::axis(1, cex.axis = 0.8); graphics::abline(v = 0)
   graphics::barplot(v, horiz = TRUE, add = TRUE, border = NA, axes = FALSE, names.arg = rep("", length(v)),
                     col = ifelse(v >= 0, cfg$colors$positive, cfg$colors$negative))
   graphics::text(v, bp, dfa_fmt(v, 3, cfg, TRUE), pos = ifelse(v >= 0, 4, 2), cex = 0.75, xpd = TRUE)
@@ -1465,7 +1574,7 @@ dfa_plot_tornado <- function(r, cfg) {
                  cex.main = 0.95 * cfg$base_font)
   dfa_grid_v(cfg)
   at <- pretty(xr); graphics::axis(1, at = at, labels = dfa_ylab_fmt(cfg)(at), cex.axis = 0.8)
-  graphics::axis(2, at = seq_len(k), labels = lab, las = 1, tick = FALSE, cex.axis = 0.8)
+  dfa_hlabels(seq_len(k), lab)
   h <- 0.35
   graphics::rect(pmin(0, lo), seq_len(k) - h, pmax(0, lo), seq_len(k) + h, col = dfa_alpha(cfg$colors$negative, 0.8), border = NA)
   graphics::rect(pmin(0, hi), seq_len(k) - h, pmax(0, hi), seq_len(k) + h, col = dfa_alpha(cfg$colors$positive, 0.8), border = NA)
@@ -1480,6 +1589,7 @@ dfa_plot_tornado <- function(r, cfg) {
 dfa_plot_dashboard <- function(r, cfg) {
   op <- graphics::par(mfrow = c(2, 2), oma = c(0, 0, 2.2, 0)); on.exit(graphics::par(op))
   cfg2 <- cfg; cfg2$base_font <- cfg$base_font * 0.85; cfg2$label_wrap <- max(10, cfg$label_wrap - 4)
+  if (length(r$model$factors) > 6) cfg2$factor_labels <- c()   # много факторов: на панели — короткие коды
   dfa_plot_waterfall(r, cfg2)
   dfa_plot_effects(r, cfg2, shares = TRUE)
   if (length(r$ok_methods) > 1) dfa_plot_methods(r, cfg2) else dfa_plot_chain_steps(r, cfg2)
@@ -1501,20 +1611,28 @@ dfa_plot_periods <- function(results, cfg, title = "Вклад факторов 
   cols <- rep(cfg$colors$methods, length.out = length(f))
   pos <- pmax(m, 0); neg <- pmin(m, 0)
   yr <- range(0, colSums(pos), colSums(neg), dy); yr <- yr + c(-1, 1) * diff(yr) * 0.1
-  op <- graphics::par(mai = c(1.1, 1.1, 0.9, 0.3)); on.exit(graphics::par(op))
+  n <- ncol(m)
+  xlab <- dfa_fit_labels(sub("→", "→\n", lab, fixed = TRUE), n, 0.72)
+  leg_rows <- ceiling((length(f) + 1) / min(4, length(f) + 1))
+  bm <- max(0.9, max(lengths(strsplit(xlab, "\n"))) * 0.2 + 0.4)
+  op <- graphics::par(mai = c(bm, 1.1, 0.9 + 0.22 * leg_rows, 0.3)); on.exit(graphics::par(op))
   bp <- graphics::barplot(pos, col = cols, border = NA, ylim = yr, axes = FALSE, names.arg = rep("", ncol(m)),
-                          main = paste0(title, "\n", DFA_METHOD_NAMES[results[[1]]$main_method]), cex.main = 0.95 * cfg$base_font)
+                          main = "", cex.main = 0.95 * cfg$base_font)
+  graphics::title(main = paste0(title, "\n", DFA_METHOD_NAMES[results[[1]]$main_method]),
+                  cex.main = 0.95 * cfg$base_font, line = 1.2 + 1.1 * leg_rows)
   dfa_grid_h(cfg)
   graphics::barplot(pos, col = cols, border = NA, add = TRUE, axes = FALSE, names.arg = rep("", ncol(m)))
   graphics::barplot(neg, col = cols, border = NA, add = TRUE, axes = FALSE, names.arg = rep("", ncol(m)))
   graphics::abline(h = 0)
   at <- pretty(yr); graphics::axis(2, at = at, labels = dfa_ylab_fmt(cfg)(at), las = 1, cex.axis = 0.8)
   graphics::lines(bp, dy, type = "b", pch = 21, bg = "white", lwd = 2, col = cfg$colors$text)
-  graphics::text(bp, dy, dfa_fmt(dy, cfg$digits, cfg, TRUE), pos = 3, cex = 0.7)
-  graphics::mtext(dfa_wrap(lab, 14), side = 1, at = bp, line = 0.4, padj = 1, cex = 0.72, las = 1)
-  graphics::legend("topleft", legend = c(dfa_labels(f, cfg), "ΔY"), fill = c(cols, NA), border = NA,
+  graphics::text(bp, dy, dfa_fmt(dy, cfg$digits, cfg, TRUE), pos = 3, cex = max(0.45, min(0.7, 7 / n)))
+  graphics::mtext(xlab, side = 1, at = bp, line = 0.4, padj = 1, cex = max(0.5, min(0.72, 9 / n)), las = 1)
+  usr <- graphics::par("usr")
+  graphics::legend(x = mean(usr[1:2]), y = usr[4], xjust = 0.5, yjust = 0, xpd = NA,
+                   legend = c(dfa_labels(f, cfg), "ΔY (итог)"), fill = c(cols, NA), border = NA,
                    lty = c(rep(NA, length(f)), 1), pch = c(rep(NA, length(f)), 21), bty = "n", cex = 0.72,
-                   ncol = min(3, length(f) + 1))
+                   ncol = min(4, length(f) + 1))
 }
 
 dfa_plot_series <- function(data, mdl, cfg, periods) {
@@ -1548,7 +1666,7 @@ dfa_plot_heatmap <- function(results, cfg, row_labels, title) {
     graphics::text(j, i, dfa_fmt(m[i, j], cfg$digits, cfg, TRUE), cex = 0.72,
                    col = if (abs(m[i, j]) > 0.6 * lim) "white" else cfg$colors$text)
   }
-  graphics::axis(2, at = seq_len(k), labels = row_labels, las = 1, tick = FALSE, cex.axis = 0.8)
+  dfa_hlabels(seq_len(k), row_labels)
   graphics::mtext(collab, side = 1, at = seq_along(f), line = 0.4, padj = 1, cex = 0.72)
 }
 
@@ -1558,11 +1676,11 @@ dfa_plot_groups <- function(results, cfg) {
   o <- order(dy); lab <- g[o]
   op <- graphics::par(mai = c(0.9, dfa_left_margin(lab, 0.8), 0.9, 0.6)); on.exit(graphics::par(op))
   xr <- range(0, dy); xr <- xr + c(-1, 1) * diff(xr) * 0.25
-  bp <- graphics::barplot(dy[o], horiz = TRUE, names.arg = lab, las = 1, border = NA, xlim = xr, axes = FALSE, cex.names = 0.8,
+  bp <- graphics::barplot(dy[o], horiz = TRUE, names.arg = rep("", length(o)), las = 1, border = NA, xlim = xr, axes = FALSE, cex.names = 0.8,
                           col = ifelse(dy[o] >= 0, cfg$colors$positive, cfg$colors$negative),
                           main = paste("Изменение результата по объектам:", cfg$response_label %||% results[[1]]$model$response),
                           cex.main = 0.95)
-  dfa_grid_v(cfg); graphics::abline(v = 0)
+  dfa_grid_v(cfg); dfa_hlabels(bp, lab); graphics::abline(v = 0)
   graphics::barplot(dy[o], horiz = TRUE, add = TRUE, border = NA, axes = FALSE, names.arg = rep("", length(o)),
                     col = ifelse(dy[o] >= 0, cfg$colors$positive, cfg$colors$negative))
   at <- pretty(xr); graphics::axis(1, at = at, labels = dfa_ylab_fmt(cfg)(at), cex.axis = 0.8)
@@ -1686,8 +1804,6 @@ dfa_run <- function(cfg = CONFIG) {
     if (identical(cfg$output_dir, CONFIG$output_dir)) cfg$output_dir <- file.path(CONFIG$output_dir, cfg$demo)
   }
   if (is.null(cfg$model)) stop("Не задана модель (cfg$model), например 'Y = a * b * c'.")
-  set.seed(cfg$seed %||% 42)
-  dir.create(cfg$output_dir, showWarnings = FALSE, recursive = TRUE)
 
   mdl <- dfa_parse_model(cfg$model, cfg$submodels, cfg$constants, cfg$response_name, cfg)
   df <- if (!is.null(cfg$data)) cfg$data else dfa_read_data(cfg$data_file, cfg$sep, cfg$dec, cfg$sheet, cfg$encoding)
@@ -1708,6 +1824,10 @@ dfa_run <- function(cfg = CONFIG) {
     periods <- if (!is.null(cfg$period_col)) as.character(sub[[cfg$period_col]]) else {
       if (nrow(sub) == 2) c(cfg$base_label, cfg$report_label) else paste("Период", seq_len(nrow(sub)))
     }
+    if (anyDuplicated(periods))
+      warning("Повторяются метки периодов", if (!is.null(g)) paste0(" (", g, ")"), ": ",
+              paste(unique(periods[duplicated(periods)]), collapse = ", "),
+              ". Строки сравниваются в порядке следования — проверьте столбец периодов.")
     pairs <- dfa_make_pairs(nrow(sub), periods, cfg)
     has_y <- mdl$response %in% names(sub) && is.numeric(sub[[mdl$response]])
     gres <- list()
@@ -1729,6 +1849,7 @@ dfa_run <- function(cfg = CONFIG) {
     results <- c(results, gres)
   }
 
+  dir.create(cfg$output_dir, showWarnings = FALSE, recursive = TRUE)
   # --- отчёт ---
   report <- c(paste0(cfg$title), paste("Дата расчёта:", format(Sys.time(), "%Y-%m-%d %H:%M")), "")
   for (bg in by_group) {
@@ -1935,7 +2056,14 @@ dfa_wizard <- function(path = NULL) {
   line("Строк: ", nrow(df), ", столбцов: ", ncol(df), ". Первые строки:\n")
   print(utils::head(df, 10), row.names = FALSE)
   num <- names(df)[vapply(df, is.numeric, logical(1))]
-  chr <- setdiff(names(df), num)
+  # числовые столбцы, похожие на периоды: годы (1900–2100) или название «год/период/месяц…»
+  per_like <- num[vapply(num, function(c) {
+    v <- df[[c]]
+    grepl("^(year|yr|period|month|date|год|период|месяц|квартал|дата)", tolower(c)) ||
+      (all(v == round(v), na.rm = TRUE) && all(v >= 1900 & v <= 2100, na.rm = TRUE))
+  }, logical(1))]
+  chr <- c(setdiff(names(df), num), per_like)
+  num <- setdiff(num, per_like)
   if (!length(num)) { line("\nВ файле нет числовых столбцов. Проверьте разделитель и десятичную запятую."); return(invisible(NULL)) }
 
   # ---- 2. периоды ----
