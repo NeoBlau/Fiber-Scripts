@@ -1847,10 +1847,18 @@ dfa_show <- function(res, which = NULL, mode = "main", list = FALSE) {
          else if (identical(mode, "all")) nm
          else dfa_main_plots(nm)
   if (!length(sel)) sel <- nm[1]
-  for (n in sel) {
-    if (grDevices::dev.cur() == 1) grDevices::dev.new()
-    tryCatch(reg[[n]](), error = function(e) warning("График '", n, "': ", conditionMessage(e)))
+  if (grDevices::dev.cur() == 1) {
+    suppressMessages(grDevices::dev.new())
+    # нет экрана (R в терминале без дисплея): R открыл бы файл Rplots.pdf — не показываем
+    if (names(grDevices::dev.cur()) %in% c("pdf", "postscript")) {
+      f <- tryCatch(grDevices::dev.off(), error = function(e) NULL)
+      unlink(list.files(pattern = "^Rplots[0-9]*\\.pdf$"))
+      message("Экрана для графиков нет — графики сохранены в папке результатов (dfa_plots.pdf, plots/).")
+      return(invisible(character(0)))
+    }
   }
+  for (n in sel)
+    tryCatch(reg[[n]](), error = function(e) warning("График '", n, "': ", conditionMessage(e)))
   if (interactive())
     message("Показано графиков: ", length(sel), ". В RStudio — вкладка Plots: листайте стрелками ← →, ",
             "«Zoom» — во весь экран, «Export» — сохранить.\n",
