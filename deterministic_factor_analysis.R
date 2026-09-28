@@ -415,7 +415,8 @@ dfa_read_data <- function(path, sep = "auto", dec = "auto", sheet = 1,
     stop("Для Excel установите пакет readxl или openxlsx ",
          "(install.packages('readxl')) либо сохраните файл как CSV.")
   }
-  lines <- readLines(path, n = 5, encoding = encoding, warn = FALSE)
+  con <- file(path, encoding = encoding)
+  lines <- tryCatch(readLines(con, n = 5, warn = FALSE), finally = close(con))
   lines <- sub("^﻿", "", lines)
   if (identical(sep, "auto")) {
     cand <- c(";", "\t", ",", "|")
