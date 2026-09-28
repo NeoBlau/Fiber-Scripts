@@ -203,6 +203,7 @@ Rscript deterministic_factor_analysis.R --gui
 | Ошибка при `download.file` | Проверьте интернет, прокси или антивирус. Или скачайте ZIP вручную по ссылке из первой строки кода, распакуйте в `Документы\DFA` и выполните только две последние строки кода. |
 | `cannot change working directory` | Папка называется иначе: выполните `list.files(dir)` и подставьте имя в `setwd(...)`. |
 | Вместо русских букв «кракозябры» | Обновите R до 4.2+ (Windows) и вызывайте `source(..., encoding = "UTF-8")`. |
+| macOS: `There were N warnings` с текстом `unable to load shared object ... R_X11.so` / `libSM.6.dylib` | Это не ошибка расчёта: R ищет XQuartz для графики. Скачайте свежую версию (код из шага 2), в ней графики на Mac рисуются встроенным движком Quartz. Или установите XQuartz — он всё равно нужен для окна настроек. |
 | Окно настроек не открывается (macOS) | Установите XQuartz и перезапустите R. |
 | Окно не открывается (RStudio Server, удалённый сервер) | Там нет графического экрана. Используйте `dfa_edit_config()` или конфиг-файл: `Rscript deterministic_factor_analysis.R --config=examples/my_config.R` |
 | Нужен Excel на выходе | `install.packages("openxlsx")` — после этого появится `dfa_results.xlsx`. |

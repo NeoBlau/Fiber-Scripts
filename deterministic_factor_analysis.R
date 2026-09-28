@@ -1564,12 +1564,41 @@ dfa_plot_device <- function(cfg) {
   env <- new.env()
   env$pdf_dev <- NULL; env$files <- character(0)
   dir <- file.path(cfg$output_dir, "plots"); dir.create(dir, showWarnings = FALSE, recursive = TRUE)
+  # Выбор графического движка с запасными вариантами:
+  #  macOS — встроенный Quartz (не требует XQuartz), затем Cairo;
+  #  Windows/Linux — Cairo (корректная кириллица), затем стандартный.
+  is_mac <- identical(unname(Sys.info()["sysname"]), "Darwin") && isTRUE(capabilities("aqua"))
   cairo <- isTRUE(capabilities("cairo"))
+  try_open <- function(openers) {
+    for (nm in names(openers)) {
+      before <- grDevices::dev.list()
+      ok <- tryCatch({ suppressWarnings(openers[[nm]]()); TRUE }, error = function(e) FALSE)
+      if (ok && length(grDevices::dev.list()) > length(before)) return(nm)
+    }
+    NULL
+  }
+  W <- cfg$png_width; H <- cfg$png_height
   if (isTRUE(cfg$plot_pdf)) {
     pf <- file.path(cfg$output_dir, "dfa_plots.pdf")
-    if (cairo) grDevices::cairo_pdf(pf, width = cfg$png_width, height = cfg$png_height, onefile = TRUE)
-    else grDevices::pdf(pf, width = cfg$png_width, height = cfg$png_height, onefile = TRUE)
-    env$pdf_dev <- grDevices::dev.cur(); env$files <- pf
+    pdf_openers <- c(
+      if (is_mac) list(quartz = function() grDevices::quartz(type = "pdf", file = pf, width = W, height = H)),
+      if (cairo) list(cairo = function() grDevices::cairo_pdf(pf, width = W, height = H, onefile = TRUE)),
+      list(pdf = function() grDevices::pdf(pf, width = W, height = H, onefile = TRUE)))
+    used <- try_open(pdf_openers)
+    if (!is.null(used)) { env$pdf_dev <- grDevices::dev.cur(); env$files <- pf }
+    else warning("Не удалось открыть PDF-устройство — PDF не будет создан")
+  }
+  png_types <- c(if (is_mac) "quartz", if (cairo) "cairo", "default")
+  env$png_type <- NULL
+  open_png <- function(f) {
+    mk <- function(t) function() {
+      if (t == "default") grDevices::png(f, width = W, height = H, units = "in", res = cfg$png_dpi)
+      else grDevices::png(f, width = W, height = H, units = "in", res = cfg$png_dpi, type = t)
+    }
+    types <- if (!is.null(env$png_type)) env$png_type else png_types
+    used <- try_open(stats::setNames(lapply(types, mk), types))
+    if (!is.null(used)) env$png_type <- used
+    !is.null(used)
   }
   env$draw <- function(name, fun) {
     ok <- TRUE
@@ -1579,8 +1608,7 @@ dfa_plot_device <- function(cfg) {
     }
     if (isTRUE(cfg$plot_png) && ok) {
       f <- file.path(dir, paste0(dfa_safe_name(name), ".png"))
-      if (cairo) grDevices::png(f, width = cfg$png_width, height = cfg$png_height, units = "in", res = cfg$png_dpi, type = "cairo")
-      else grDevices::png(f, width = cfg$png_width, height = cfg$png_height, units = "in", res = cfg$png_dpi)
+      if (!open_png(f)) { warning("Не удалось открыть PNG-устройство для '", name, "'"); return(invisible()) }
       tryCatch(fun(), error = function(e) warning("График '", name, "': ", conditionMessage(e)))
       grDevices::dev.off()
       env$files <- c(env$files, f)
