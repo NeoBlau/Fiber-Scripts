@@ -160,6 +160,11 @@ CONFIG <- list(
 
   # ---- Графики --------------------------------------------------------------
   plots        = TRUE,
+  # Показывать графики прямо в R (RStudio → вкладка Plots, листать стрелками ← →):
+  #  "main" — сводные панели и итоговые графики, "all" — все, "none" — не показывать.
+  #  Работает в интерактивной сессии (RStudio, RGui); из Rscript графики только в файлах.
+  #  Показать снова в любой момент: dfa_show(res)
+  show_plots   = "main",
   plot_types   = c("dashboard", "waterfall", "effects", "shares", "methods",
                    "order", "chain_steps", "dynamics", "elasticity",
                    "tornado", "periods", "heatmap", "groups"),
@@ -1563,6 +1568,7 @@ dfa_plot_groups <- function(results, cfg) {
 dfa_plot_device <- function(cfg) {
   env <- new.env()
   env$pdf_dev <- NULL; env$files <- character(0)
+  env$registry <- list()   # все графики: имя -> функция рисования (для dfa_show)
   dir <- file.path(cfg$output_dir, "plots"); dir.create(dir, showWarnings = FALSE, recursive = TRUE)
   # Выбор графического движка с запасными вариантами:
   #  macOS — встроенный Quartz (не требует XQuartz), затем Cairo;
@@ -1601,6 +1607,7 @@ dfa_plot_device <- function(cfg) {
     !is.null(used)
   }
   env$draw <- function(name, fun) {
+    env$registry[[name]] <- fun
     ok <- TRUE
     if (!is.null(env$pdf_dev)) {
       grDevices::dev.set(env$pdf_dev)
@@ -1789,7 +1796,8 @@ dfa_run <- function(cfg = CONFIG) {
       }
     }, finally = dev$close())
     files <- c(files, dev$files)
-  }
+    plot_registry <- dev$registry
+  } else plot_registry <- list()
 
   out <- list(config = cfg, model = mdl, data = df, results = results, by_group = by_group,
               tables = tables, report = report, files = files)
@@ -1797,7 +1805,38 @@ dfa_run <- function(cfg = CONFIG) {
   if (isTRUE(cfg$save_rds)) { rf <- file.path(cfg$output_dir, "dfa_results.rds"); saveRDS(out, rf); out$files <- c(out$files, rf) }
   dfa_msg(cfg, "\nГотово. Результаты сохранены в: ", normalizePath(cfg$output_dir),
           "\n  файлов: ", length(out$files), "  (отчёт, таблицы CSV, графики PNG/PDF, RDS)")
+  out$plots <- plot_registry   # добавляется после saveRDS, чтобы не раздувать файл
+  mode <- cfg$show_plots %||% "none"
+  if (isTRUE(mode)) mode <- "main"
+  if (interactive() && length(plot_registry) && !identical(mode, "none") && !isFALSE(mode))
+    dfa_show(out, mode = mode)
   invisible(out)
+}
+
+# Показ графиков на экране (RStudio: вкладка Plots; RGui: окно графики)
+#   dfa_show(res)                     — главные графики
+#   dfa_show(res, mode = "all")       — все графики
+#   dfa_show(res, "waterfall")        — только водопады (поиск по имени)
+#   dfa_show(res, c("tornado", "order"))
+#   dfa_show(res, list = TRUE)        — список доступных графиков
+dfa_show <- function(res, which = NULL, mode = "main", list = FALSE) {
+  reg <- res$plots
+  if (!length(reg)) { message("Графиков нет: запустите анализ с plots = TRUE"); return(invisible(character(0))) }
+  nm <- names(reg)
+  if (list) { cat(paste0("  ", nm), sep = "\n"); return(invisible(nm)) }
+  sel <- if (!is.null(which)) nm[Reduce(`|`, lapply(which, function(w) grepl(w, nm, fixed = TRUE)))]
+         else if (identical(mode, "all")) nm
+         else nm[grepl("00_dashboard$|(^|_)1[0-2]_|^2[0-2]_", nm)]
+  if (!length(sel)) sel <- nm[1]
+  for (n in sel) {
+    if (grDevices::dev.cur() == 1) grDevices::dev.new()
+    tryCatch(reg[[n]](), error = function(e) warning("График '", n, "': ", conditionMessage(e)))
+  }
+  if (interactive())
+    message("Показано графиков: ", length(sel), ". В RStudio — вкладка Plots: листайте стрелками ← →, ",
+            "«Zoom» — во весь экран, «Export» — сохранить.\n",
+            "Все графики: dfa_show(res, mode = \"all\");  список: dfa_show(res, list = TRUE)")
+  invisible(sel)
 }
 
 dfa_collect_tables <- function(results, by_group, mdl, cfg) {
@@ -2433,6 +2472,10 @@ dfa_gui <- function(cfg = CONFIG, on_open = NULL) {
     }
   })
   B("Сбросить", function() load_demo())
+  B("Показать графики", function() {
+    if (is.null(G$result)) tk$tkmessageBox(parent = top, title = "Графики", message = "Сначала запустите анализ")
+    else dfa_show(G$result, mode = "main")
+  })
   B("Открыть PDF", function() open_path(file.path(G$cfg$output_dir, "dfa_plots.pdf")))
   B("Открыть папку", function() open_path(G$cfg$output_dir))
   close_gui <- function() {

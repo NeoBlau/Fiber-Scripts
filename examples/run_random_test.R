@@ -106,6 +106,8 @@ all_ok <- all(check("1. Смешанная, план/факт", res1),
 cat(if (all_ok) "\nВсё сошлось. " else "\nЕсть ошибки! ",
     "Результаты: ", normalizePath(OUT_DIR), "\n", sep = "")
 
+# Графики на экране (RStudio → вкладка Plots, листать стрелками):
+#   dfa_show(res1); dfa_show(res2, mode = "all"); dfa_show(res3, "heatmap")
 # Быстрый доступ к цифрам:
 #   res1$results[[1]]$effects        — влияние факторов по всем методам
 #   res2$tables$effects_long         — всё в одной таблице
