@@ -38,7 +38,7 @@ function parseNum(x) {
     if (typeof x === 'number') return isFinite(x) ? x : NaN;
     if (x == null) return NaN;
     let s = String(x).trim(); if (!s) return NaN;
-    s = s.replace(/[     ']/g, '').replace(/[−–—]/g, '-');
+    s = s.replace(/[\s\u00a0\u2007\u202f\u2009']/g, '').replace(/[−–—]/g, '-');
     let neg = false; if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
     s = s.replace(/%$/, '');
     if (/,/.test(s) && /\./.test(s)) s = s.lastIndexOf(',') > s.lastIndexOf('.') ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
