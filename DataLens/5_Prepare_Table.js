@@ -39,6 +39,7 @@ function parseNum(x) {
     if (typeof x === 'number') return isFinite(x) ? x : NaN;
     if (x == null) return NaN;
     let s = String(x).trim(); if (!s) return NaN;
+    if (/^-?\d+(\.\d+)?$/.test(s)) return +s; // быстрый путь: DataLens отдаёт «1234.5»
     s = s.replace(/[\s\u00a0\u2007\u202f\u2009']/g, '').replace(/[−–—]/g, '-');
     let neg = false; if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
     s = s.replace(/%$/, '');
@@ -50,8 +51,13 @@ function parseNum(x) {
 /* ---------- периоды: ключ месяца = год*12 + (месяц-1) ---------- */
 const MON = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
 const MONRE = [[/^(янв|jan)/i, 0], [/^(фев|feb)/i, 1], [/^(мар|mar)/i, 2], [/^(апр|apr)/i, 3], [/^(мая|май|may)/i, 4], [/^(июн|jun)/i, 5], [/^(июл|jul)/i, 6], [/^(авг|aug)/i, 7], [/^(сен|sep)/i, 8], [/^(окт|oct)/i, 9], [/^(ноя|nov)/i, 10], [/^(дек|dec)/i, 11]];
+const PERIOD_CACHE = new Map();
 function parsePeriod(raw) {
     if (raw == null) return null;
+    const ck = String(raw); if (PERIOD_CACHE.has(ck)) return PERIOD_CACHE.get(ck);
+    const res = parsePeriodRaw(raw); if (PERIOD_CACHE.size < 20000) PERIOD_CACHE.set(ck, res); return res;
+}
+function parsePeriodRaw(raw) {
     let s = String(raw).trim().toLowerCase().replace(/\s+/g, ' '); if (!s) return null;
     const Y = (y) => { y = +y; if (y < 100) y += 2000; return y >= 1900 && y <= 2200 ? y : NaN; };
     const mw = (w) => { for (const [re, m] of MONRE) if (re.test(w)) return m; return -1; };
@@ -141,7 +147,19 @@ function parseModel(text, names) {
     const type = L ? 'additive' : okPP ? (Object.values(Pp.p).every((v) => v > 0) ? 'multiplicative' : 'multiple') : rt && pp(rt.num) && lin(rt.den) ? 'multiple' : 'mixed';
     const pureMult = okPP && Object.values(Pp.p).every((v) => Math.abs(v - 1) < 1e-12);
     const applicable = {chain: true, abs: true, integral: true, shapley: vars.length <= 12, rel: pureMult, index: okPP, log: okPP, prop: type === 'additive' || groups.length > 0};
-    return {vars, fn: (x) => ev(ast, x), pp: okPP ? Pp : null, pureMult, lin: L, groups, type, applicable};
+    // формула → готовая функция (быстрее обхода дерева на каждом вычислении)
+    const comp = (n) => {
+        if (n.t === 'num') { const c = n.v; return () => c; }
+        if (n.t === 'var') { const i = n.i; return (x) => x[i]; }
+        if (n.t === 'neg') { const a = comp(n.a); return (x) => -a(x); }
+        const a = comp(n.a), b = comp(n.b);
+        if (n.op === '+') return (x) => a(x) + b(x);
+        if (n.op === '-') return (x) => a(x) - b(x);
+        if (n.op === '*') return (x) => a(x) * b(x);
+        if (n.op === '/') return (x) => a(x) / b(x);
+        return (x) => Math.pow(a(x), b(x));
+    };
+    return {vars, fn: comp(ast), pp: okPP ? Pp : null, pureMult, lin: L, groups, type, applicable};
 }
 
 function faMethod(M, m, xa, xb, ord) {
@@ -161,7 +179,7 @@ function faMethod(M, m, xa, xb, ord) {
         const wts = [0.0471753364, 0.1069393260, 0.1600783285, 0.2031674267, 0.2334925365, 0.2491470458, 0.2491470458, 0.2334925365, 0.2031674267, 0.1600783285, 0.1069393260, 0.0471753364];
         for (let q = 0; q < nodes.length; q++) {
             const t = (nodes[q] + 1) / 2, w = wts[q] / 2, x = xa.map((v, i) => v + t * (xb[i] - v));
-            for (let i = 0; i < k; i++) { const h = 1e-6 * Math.max(Math.abs(x[i]), 1), xp = x.slice(), xm = x.slice(); xp[i] += h; xm[i] -= h; eff[i] += w * (F(xp) - F(xm)) / (2 * h) * (xb[i] - xa[i]); }
+            for (let i = 0; i < k; i++) { if (xb[i] === xa[i]) continue; const x0 = x[i], h = 1e-6 * Math.max(Math.abs(x0), 1); x[i] = x0 + h; const fp = F(x); x[i] = x0 - h; const fm = F(x); x[i] = x0; eff[i] += w * (fp - fm) / (2 * h) * (xb[i] - xa[i]); }
         }
     } else if (m === 'shapley') {
         if (k > 12) return null;
@@ -210,14 +228,14 @@ function computeFA(opt) {
     const avgList = P('fa_avg_fields').split(';').map((s) => s.trim()).filter(Boolean);
     const isAvg = M.vars.map((v) => avgList.length ? avgList.includes(v) : guessAvg(v));
     const columns = [fPeriod, fPos, fGroup].concat(M.vars).filter((c, i, a) => c && a.indexOf(c) === i);
-    const rows = loadRows(columns);
+    const rows = (opt && opt.rows) || loadRows(columns);
     if (!rows.length) throw new Error('Датасет вернул 0 строк. Проверьте ID датасета на вкладке Meta и названия полей на вкладке Params.');
     const missing = columns.filter((c) => !(c in rows[0]));
     if (missing.length) throw new Error('В датасете нет полей: ' + missing.join(', ') + '. Есть: ' + Object.keys(rows[0]).join(', '));
     // агрегирование позиция × период
     const gOrd = {M: 0, Q: 1, Y: 2}; let gMin = 2; const bad = [];
     const parsed = rows.map((r) => { const p = parsePeriod(r[fPeriod]); if (p) gMin = Math.min(gMin, gOrd[p.g]); else if (bad.length < 3) bad.push(String(r[fPeriod])); return p; });
-    const G = ['M', 'Q', 'Y'][gMin];
+    const G = ['M', 'Q', 'Y'][Math.max(gMin, {M: 0, Q: 1, Y: 2}[P('fa_grain')] || 0)];
     const gk = (k) => G === 'M' ? k : G === 'Q' ? Math.floor(k / 12) * 12 + Math.floor((k % 12) / 3) * 3 : Math.floor(k / 12) * 12;
     const cell = new Map(), posInfo = new Map(), keySet = new Set();
     const grpFilter = P('fa_group_filter');
@@ -273,9 +291,10 @@ function computeFA(opt) {
     if (k >= 2 && k <= 6) { // 6! = 720 порядков — укладываемся в лимит времени DataLens
         let perms = [[0]]; for (let n = 1; n < k; n++) { const nx = []; perms.forEach((p) => { for (let q = 0; q <= p.length; q++) nx.push(p.slice(0, q).concat([n], p.slice(q))); }); perms = nx; }
         const mat = perms.map(() => new Array(k).fill(0));
-        per.forEach((r) => { const n = 1 << k, vals = new Array(n); for (let s = 0; s < n; s++) vals[s] = M.fn(r.xa.map((v, i) => (s >> i) & 1 ? r.xb[i] : v)); if (vals.some((v) => !isNum(v))) return; perms.forEach((p, q) => { let mm = 0; p.forEach((i) => { mat[q][i] += vals[mm | (1 << i)] - vals[mm]; mm |= 1 << i; }); }); });
+        const budget = Math.max(50, Math.floor(200000 / perms.length)), ordPer = per.slice(0, budget); // per уже отсортирован по |Δ|
+        ordPer.forEach((r) => { const n = 1 << k, vals = new Array(n); for (let s = 0; s < n; s++) vals[s] = M.fn(r.xa.map((v, i) => (s >> i) & 1 ? r.xb[i] : v)); if (vals.some((v) => !isNum(v))) return; perms.forEach((p, q) => { let mm = 0; p.forEach((i) => { mat[q][i] += vals[mm | (1 << i)] - vals[mm]; mm |= 1 << i; }); }); });
         const key = ord.join(','), ci = perms.findIndex((p) => p.join(',') === key);
-        order = {n: perms.length, stat: M.vars.map((v, i) => { const col = mat.map((r) => r[i]); const mn = Math.min(...col), mx = Math.max(...col); return {name: v, min: mn, max: mx, mean: col.reduce((a, b) => a + b, 0) / col.length, chain: mat[ci][i], flip: mn < 0 && mx > 0}; })};
+        order = {n: perms.length, sample: ordPer.length < per.length ? ordPer.length : 0, stat: M.vars.map((v, i) => { const col = mat.map((r) => r[i]); const mn = Math.min(...col), mx = Math.max(...col); return {name: v, min: mn, max: mx, mean: col.reduce((a, b) => a + b, 0) / col.length, chain: mat[ci][i], flip: mn < 0 && mx > 0}; })};
     }
     // чувствительность: эластичности и ±10% (от базисного периода)
     const tot = (sc) => per.reduce((s, r) => { const y = M.fn(r.xa.map((v, i) => v * (sc[i] == null ? 1 : sc[i]))); return isNum(y) ? s + y : s; }, 0);
@@ -283,7 +302,7 @@ function computeFA(opt) {
     const sens = M.vars.map((v, i) => { const sc = (d) => { const a = new Array(k).fill(1); a[i] = 1 + d; return tot(a); }; return {name: v, el: Y0 ? (sc(0.01) - sc(-0.01)) / 0.02 / Y0 : NaN, lo: sc(-0.1) - Y0, hi: sc(0.1) - Y0}; });
     // подробный расчёт по позициям (крупнейшие 60)
     const sub = (i, w) => esc(M.vars[i]) + (w ? '₁' : '₀');
-    const detail = per.slice(0, 60).map((r) => {
+    const detail = per.slice(0, opt && opt.lite ? 30 : 60).map((r) => {
         const steps = [{label: 'Y₀ (базисный)', vals: M.vars.map((_, i) => sub(i, 0)).join(', '), y: r.ya, eff: null}];
         let cur = r.xa.slice(), prev = r.ya; const done = [];
         ord.forEach((i, q) => { cur[i] = r.xb[i]; done.push(i); const y = M.fn(cur); steps.push({label: q === k - 1 ? 'Y₁ (отчётный)' : 'Y усл.' + (q + 1), vals: M.vars.map((_, j) => sub(j, done.includes(j))).join(', '), y, eff: y - prev, f: M.vars[i]}); prev = y; });
@@ -321,7 +340,8 @@ function computeFA(opt) {
         if (order) { const fl = order.stat.filter((s) => s.flip), spread = Math.max(...order.stat.map((s) => s.max - s.min));
             if (fl.length) C.push({k: 'warn', t: 'Знак влияния ' + fl.map((s) => '<b>' + esc(s.name) + '</b>').join(', ') + ' зависит от порядка подстановки — опирайтесь на интегральный метод или Шепли.'});
             else if (dY && spread / Math.abs(dY) > 0.05) C.push({k: 'warn', t: 'Цепные методы зависят от порядка подстановки (разброс до ' + numStr(spread / Math.abs(dY) * 100, 0) + '% изменения) — сверяйтесь с интегральным методом и Шепли.'});
-            else C.push({k: 'info', t: 'От порядка подстановки результат почти не зависит — выводы устойчивы.'}); }
+            else C.push({k: 'info', t: 'От порядка подстановки результат почти не зависит — выводы устойчивы.'});
+            if (order.sample) C.push({k: 'info', t: 'Устойчивость к порядку оценена по ' + order.sample + ' крупнейшим изменениям из ' + per.length + ' позиций (ограничение времени расчёта).'}); }
         if (R[m].fb) C.push({k: 'warn', t: 'Для ' + R[m].fb + ' поз. метод неприменим к их значениям (нули, смена знака) — для них взят метод Шепли.'});
         C.push({k: 'info', t: 'Проверка баланса: сумма влияний равна изменению результата.'});
         conclusions[m] = C;
@@ -331,7 +351,7 @@ function computeFA(opt) {
         method, methods, ord: ord.map((i) => M.vars[i]),
         R: methods.reduce((o, m) => { o[m] = {eff: R[m].eff, fb: R[m].fb}; return o; }, {}),
         Ya, Yb, dY, newE, goneE, skipped, positionsTotal: per.length,
-        positions: per.slice(0, opt && opt.all ? per.length : 200).map((r) => ({name: r.name, group: r.group, ya: r.ya, yb: r.yb, d: r.d, per: r.per})),
+        positions: per.slice(0, opt && opt.all ? per.length : opt && opt.lite ? 60 : 200).map((r) => ({name: r.name, group: r.group, ya: r.ya, yb: r.yb, d: r.d, per: r.per})),
         detail, order, sens, conclusions,
         names: FA_METHODS, short: FA_SHORT, na: FA_NA,
     });
