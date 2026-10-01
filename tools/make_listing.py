@@ -1,10 +1,14 @@
-"""Листинг исходного текста для депонирования в Роспатенте:
+"""Листинг исходного текста (один или несколько файлов подряд) для депонирования в Роспатенте:
 первые 10 и последние 10 страниц, сквозная нумерация. Результат — PDF (Chromium)."""
 import html, sys, asyncio
-SRC, OUT, TITLE = sys.argv[1], sys.argv[2], sys.argv[3]
+OUT, TITLE, SRCS = sys.argv[1], sys.argv[2], sys.argv[3:]
 COLS, ROWS = 100, 58
 lines = []
-for raw in open(SRC, encoding='utf-8').read().replace('\t', '    ').split('\n'):
+text = ''
+for f in SRCS:
+    t = open(f, encoding='utf-8').read().replace('\ufeff', '')
+    text += ('' if len(SRCS) == 1 else '\n/* ===== файл: ' + f + ' ===== */\n') + t
+for raw in text.replace('\t', '    ').split('\n'):
     raw = raw.rstrip('\r')
     if not raw: lines.append(''); continue
     while len(raw) > COLS: lines.append(raw[:COLS]); raw = raw[COLS:]
