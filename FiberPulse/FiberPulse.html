@@ -1212,7 +1212,7 @@ function demoBudget() {
 
 /* ---------------------------- сохранение ---------------------------- */
 function saveDS() {
-  if (!DS) return;
+  if (!DS || DS.demo) return;      // пример не запоминаем — при следующем открытии он не появится сам
   const pack = { ...DS, derived: DS.derived.map(d => ({ name: d.name, formula: d.formula, agg: d.agg })) };
   const ok = store.set("ds", pack);
   if (!ok && !DS.demo) toast("Данные слишком большие для автосохранения — при следующем открытии загрузите файл снова.", 4000);
@@ -1236,15 +1236,25 @@ function setDS(ds, keepState) {
 /* ---------------------------- интерфейс ---------------------------- */
 const VIEWS = {};
 function render() {
-  if (!DS) return;
+  if (!DS) {                       // данных ещё нет — стартовый экран
+    S.view = "data";
+    $("#toolbar").hidden = true;
+    $$(".nav-btn").forEach(b => { const off = b.dataset.view !== "data"; b.disabled = off; b.style.opacity = off ? .45 : 1; b.title = off ? "Сначала загрузите данные" : "";
+      b.setAttribute("aria-current", b.dataset.view === "data" ? "page" : "false"); });
+    const c = $("#content"); c.innerHTML = ""; VIEWS.data(c);
+    $("#ds-info").textContent = "Данные ещё не загружены";
+    return;
+  }
+  $$(".nav-btn").forEach(b => { b.disabled = false; b.style.opacity = 1; b.title = ""; });
   renderToolbar();
   $$(".nav-btn").forEach(b => b.setAttribute("aria-current", b.dataset.view === S.view ? "page" : "false"));
   const c = $("#content"); c.innerHTML = "";
   if (DS.demo && S.view !== "data") {
     const b = document.createElement("div"); b.className = "banner";
-    b.innerHTML = `<span>Сейчас открыт <b>пример</b>: ${esc(DS.name.replace(/^Пример:\s*/, ""))}. Цифры выдуманы.</span><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary sm" data-go="data">Загрузить свою таблицу</button><button class="btn sm" id="demo-switch">Другой пример</button></span>`;
+    b.innerHTML = `<span>Сейчас открыт <b>пример</b>: ${esc(DS.name.replace(/^Пример:\s*/, ""))}. Цифры выдуманы.</span><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary sm" data-go="data">Загрузить свою таблицу</button><button class="btn sm" id="demo-switch">Другой пример</button><button class="btn ghost sm" id="demo-close">Закрыть пример</button></span>`;
     c.appendChild(b);
     $("#demo-switch", b).onclick = () => setDS(/бюджет/i.test(DS.name) ? demoSales() : demoBudget());
+    $("#demo-close", b).onclick = () => { const saved = store.get("ds", null); if (saved && saved.keys) setDS({ ...saved, derived: saved.derived || [] }, true); else { DS = null; clearCache(); render(); } };
   }
   VIEWS[S.view](c);
   $$("[data-go]", c).forEach(b => b.onclick = () => go(b.dataset.go));
@@ -1621,24 +1631,28 @@ VIEWS.forecast = c => {
 /* ---------- Данные ---------- */
 let PENDING = null; // распознанный файл, ожидающий подтверждения
 VIEWS.data = c => {
-  c.insertAdjacentHTML("beforeend", pageHead("Данные", "Загрузите таблицу из Excel — программа сама поймёт, где позиции, где месяцы и где показатели."));
+  if (!DS) c.insertAdjacentHTML("beforeend", `<div class="page-head"><div><h1 class="page-title">Fiber Pulse: с чего начать</h1>
+      <p class="page-sub">Программа показывает, как меняются ваши позиции — товары, статьи затрат, показатели — от месяца к месяцу и от года к году. Пока данных нет: загрузите таблицу.</p></div></div>
+    <ol class="steps"><li>Перетащите файл в рамку ниже или нажмите «Выбрать файл»</li><li>Проверьте, что программа правильно поняла столбцы</li><li>Нажмите «Загрузить данные» — откроются графики и выводы</li></ol>`);
+  else c.insertAdjacentHTML("beforeend", pageHead("Данные", "Загрузите таблицу из Excel — программа сама поймёт, где позиции, где месяцы и где показатели."));
   c.insertAdjacentHTML("beforeend", `<div class="drop" id="drop">
       <svg viewBox="0 0 24 24" width="38" height="38" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>
       <h3>Перетащите файл сюда</h3>
       <p>Excel (.xlsx) или CSV. Или скопируйте таблицу в Excel и нажмите <b>Ctrl+V</b> (на Mac — <b>⌘V</b>) прямо на этой странице.</p>
-      <div class="drop-actions"><button class="btn primary" id="pick">Выбрать файл</button><button class="btn" id="demo1">Пример: продажи</button><button class="btn" id="demo2">Пример: бюджет затрат</button></div>
+      <div class="drop-actions"><button class="btn primary" id="pick">Выбрать файл</button></div>
+      <p class="muted" style="font-size:12.5px">Нет своих данных под рукой? В папке программы есть <b>test_data/pub_sales.csv</b> — продажи паба за 3 года. Или посмотрите встроенный пример: <button class="btn ghost sm" id="demo1">продажи магазина</button> <button class="btn ghost sm" id="demo2">бюджет затрат</button></p>
     </div>`);
   c.insertAdjacentHTML("beforeend", `<div id="pending"></div>`);
-  c.insertAdjacentHTML("beforeend", `<div class="grid g-2e">
+  c.insertAdjacentHTML("beforeend", `<div class="grid ${DS ? "g-2e" : ""}">
     ${cardHTML("fmt-help", "Какие таблицы подходят", "", "", `
       <p style="margin:0 0 8px"><b>Вариант 1 — позиции × месяцы.</b> Как обычно в Excel:</p>
       <div class="preview-wrap" style="max-height:none"><table class="preview"><tr><th>Позиция</th><th>Группа</th><th>янв 2025</th><th>фев 2025</th><th>мар 2025</th></tr><tr><td>Кофе 1 кг</td><td>Кофе</td><td>5 120</td><td>4 980</td><td>5 300</td></tr><tr><td>Чай 100 пак.</td><td>Чай</td><td>7 400</td><td>7 150</td><td>6 900</td></tr></table></div>
       <p style="margin:12px 0 8px"><b>Вариант 2 — длинная таблица</b> (выгрузка из 1С, BI): строка = позиция + период, столбцы — показатели:</p>
       <div class="preview-wrap" style="max-height:none"><table class="preview"><tr><th>Дата</th><th>Товар</th><th>Объём</th><th>Цена</th><th>Выручка</th></tr><tr><td>01.01.2025</td><td>Кофе 1 кг</td><td>5 120</td><td>1 590</td><td>8 140 800</td></tr><tr><td>01.02.2025</td><td>Кофе 1 кг</td><td>4 980</td><td>1 610</td><td>8 017 800</td></tr></table></div>
       <p class="muted" style="margin:10px 0 0;font-size:12.5px">Периоды понимаются в любом виде: «янв 2025», «Январь 2025», «2025-01», «01.2025», «15.01.2025», «I кв 2025», «2025». Числа: «1 234,5», «12,5%», «(1 234)». Дни собираются в месяцы автоматически.</p>`)}
-    ${cardHTML("ds-now", "Сейчас загружено", "", "", dsSummary())}
+    ${DS ? cardHTML("ds-now", "Сейчас загружено", "", "", dsSummary()) : ""}
   </div>`);
-  c.insertAdjacentHTML("beforeend", cardHTML("ds-derived", "Расчётные показатели", "Добавьте свой показатель по формуле — например, маржа = [Выручка] − [Себестоимость] или средний чек = [Выручка] ÷ [Чеки]. Он появится во всех разделах.", "", derivedHTML()));
+  if (DS) c.insertAdjacentHTML("beforeend", cardHTML("ds-derived", "Расчётные показатели", "Добавьте свой показатель по формуле — например, маржа = [Выручка] − [Себестоимость] или средний чек = [Выручка] ÷ [Чеки]. Он появится во всех разделах.", "", derivedHTML()));
   renderPending();
   $("#pick").onclick = () => $("#file-input").click();
   $("#demo1").onclick = () => { PENDING = null; setDS(demoSales()); go("overview"); };
@@ -1647,7 +1661,7 @@ VIEWS.data = c => {
   ["dragenter", "dragover"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add("over"); }));
   ["dragleave", "drop"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("over"); }));
   drop.addEventListener("drop", ev => { const f = ev.dataTransfer.files[0]; if (f) loadFile(f); });
-  bindDerived(c); bindDsTools(c);
+  if (DS) { bindDerived(c); bindDsTools(c); }
 };
 function dsSummary() {
   const m = allMetricNames().map(n => `<span class="tag">${esc(n)} · ${metricInfo(n).agg === "avg" ? "среднее" : "сумма"}</span>`).join(" ");
@@ -1668,7 +1682,7 @@ function bindDsTools(c) {
     DS.positions.forEach((p, i) => DS.keys.forEach((k, t) => { const vals = allMetricNames().map(m => baseSeries(m)[i * DS.keys.length + t]); if (vals.some(isNum)) lines.push([p.name, p.group, pLabel(k, DS.base), ...vals.map(v => isNum(v) ? String(v).replace(".", ",") : "")].map(s => /[;"]/.test(s) ? '"' + String(s).replace(/"/g, '""') + '"' : s).join(";")); }));
     download(new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv" }), "данные_fiber_pulse.csv");
   };
-  const fg = $("#ds-forget"); if (fg) fg.onclick = () => { store.del("ds"); setDS(demoSales()); toast("Данные удалены из памяти браузера, открыт пример"); };
+  const fg = $("#ds-forget"); if (fg) fg.onclick = () => { store.del("ds"); DS = null; clearCache(); render(); toast("Данные удалены из памяти браузера"); };
 }
 function derivedHTML() {
   const list = DS.derived.map((d, i) => `<div class="formula-row"><span class="tag">${esc(d.name)}</span><span class="mono" style="font-size:12.5px">= ${esc(d.formula)}</span><button class="btn ghost sm" data-deldv="${i}">Удалить</button></div>`).join("");
@@ -1764,7 +1778,7 @@ function bindGlobal() {
     e.preventDefault(); loadGrid(parseDelimited(text), "Таблица из буфера обмена");
   });
   document.addEventListener("keydown", e => {
-    if (e.target.matches("input, select, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (!DS || e.target.matches("input, select, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === "ArrowLeft") $("#tb-prev").click(); else if (e.key === "ArrowRight") $("#tb-next").click();
   });
   $$("[data-theme-set]").forEach(b => b.onclick = () => { setTheme(b.dataset.themeSet); });
@@ -1788,10 +1802,10 @@ function setTheme(t, initial) {
   if (st) Object.assign(S, st, { factor: { ...S.factor, ...(st.factor || {}) } });
   bindGlobal();
   const saved = store.get("ds", null);
-  if (saved && saved.keys && saved.positions && saved.data) {
+  if (saved && saved.keys && saved.positions && saved.data && !saved.demo) {
     try { setDS({ ...saved, data: saved.data, derived: saved.derived || [] }, true); return; } catch (e) { store.del("ds"); }
   }
-  setDS(demoSales());
+  DS = null; render();
 })();
 </script>
 </body>

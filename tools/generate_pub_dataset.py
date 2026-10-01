@@ -2,17 +2,16 @@
 Тестовые данные для Fiber Pulse: паб «Гарцующий пони» (Бри, Средиземье).
 Паб вымышленный, все цифры выдуманы. Нужны только чтобы проверить программу.
 
-Запуск:  python3 generate_pub_dataset.py      (нужны pandas и openpyxl:
-         pip install pandas openpyxl)
+Служебный скрипт разработчика: пользователю программы он не нужен.
+Запуск из корня репозитория:  python3 tools/generate_pub_dataset.py
+(нужны pandas и openpyxl: pip install pandas openpyxl)
 
-Создаёт:
-  1_pony_sales_monthly.csv     — длинная таблица: месяц × позиция,
-                                 столбцы Продано, Цена, Выручка, Себестоимость
-  2_pony_revenue_by_month.xlsx    — позиции × месяцы (как обычно делают в Excel),
-                                 лист «Выручка» и лист «Продано»
-  3_pony_costs.csv           — статьи затрат × месяцы (бюджет)
-  4_pony_daily_2025.csv      — продажи по дням за 2025 год (программа сама
-                                 соберёт дни в месяцы)
+Создаёт в FiberPulse/test_data/:
+  pub_sales.csv                         — продажи по месяцам: месяц × позиция,
+                                          столбцы Продано, Цена, Выручка, Себестоимость
+  other_formats/pub_revenue_excel.xlsx  — позиции × месяцы в Excel (листы «Выручка», «Продано»)
+  other_formats/pub_costs.csv           — статьи затрат × месяцы
+  other_formats/pub_sales_daily_2025.csv — продажи по дням за 2025 год
 
 Что заложено в данные, чтобы было что находить:
   * сезонность: летом растут лагер, сидр и лимонад, зимой — стаут, глинтвейн и пироги;
@@ -27,7 +26,9 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-OUT = Path(__file__).resolve().parent
+OUT = Path(__file__).resolve().parent.parent / "FiberPulse" / "test_data"
+OTHER = OUT / "other_formats"
+OTHER.mkdir(parents=True, exist_ok=True)
 rng = np.random.default_rng(2025)
 months = pd.period_range("2023-01", "2025-12", freq="M")
 N = len(months)
@@ -91,7 +92,7 @@ for item in MENU:
         })
 
 sales = pd.DataFrame(rows)
-sales.to_csv(OUT / "1_pony_sales_monthly.csv", sep=";", decimal=",", index=False, encoding="utf-8-sig")
+sales.to_csv(OUT / "pub_sales.csv", sep=";", decimal=",", index=False, encoding="utf-8-sig")
 
 # Широкие таблицы «позиции × месяцы» в Excel
 def wide(col):
@@ -101,7 +102,7 @@ def wide(col):
     w.columns = [pd.to_datetime(c, dayfirst=True).strftime("%Y-%m") for c in order]
     return w.reset_index()
 
-with pd.ExcelWriter(OUT / "2_pony_revenue_by_month.xlsx", engine="openpyxl") as xw:
+with pd.ExcelWriter(OTHER / "pub_revenue_excel.xlsx", engine="openpyxl") as xw:
     wide("Выручка, руб.").to_excel(xw, sheet_name="Выручка", index=False)
     wide("Продано, шт.").to_excel(xw, sheet_name="Продано", index=False)
 
@@ -132,7 +133,7 @@ costs = pd.DataFrame(crow)
 RU = {"Jan": "янв", "Feb": "фев", "Mar": "мар", "Apr": "апр", "May": "май", "Jun": "июн",
       "Jul": "июл", "Aug": "авг", "Sep": "сен", "Oct": "окт", "Nov": "ноя", "Dec": "дек"}
 costs.columns = [RU.get(c[:3], c[:3]) + c[3:] if c[:3] in RU else c for c in costs.columns]
-costs.to_csv(OUT / "3_pony_costs.csv", sep=";", index=False, encoding="utf-8-sig")
+costs.to_csv(OTHER / "pub_costs.csv", sep=";", index=False, encoding="utf-8-sig")
 
 # Продажи по дням за 2025 год (крупные позиции): проверка сборки дней в месяцы
 days = pd.date_range("2025-01-01", "2025-12-31", freq="D")
@@ -147,6 +148,6 @@ for _, r in m25.iterrows():
     q[-1] += r["Продано, шт."] - q.sum()
     for d, qq in zip(md, q):
         drow.append({"Дата": d.strftime("%Y-%m-%d"), "Позиция": r["Позиция"], "Продано": int(qq), "Выручка": int(qq * r["Цена, руб."])})
-pd.DataFrame(drow).to_csv(OUT / "4_pony_daily_2025.csv", index=False, encoding="utf-8-sig")
+pd.DataFrame(drow).to_csv(OTHER / "pub_sales_daily_2025.csv", index=False, encoding="utf-8-sig")
 
 print(f"Готово: {len(sales)} строк продаж, {len(MENU)} позиций, {N} месяцев → {OUT}")
