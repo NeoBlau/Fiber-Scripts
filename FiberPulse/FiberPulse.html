@@ -1695,7 +1695,7 @@ async function loadFile(file) {
   try {
     toast("Читаю «" + file.name + "»…", 1500);
     const wb = await readFileToGrid(file);
-    PENDING = { name: file.name.replace(/\.[^.]+$/, ""), sheets: wb.sheets, sheet: 0 };
+    PENDING = { name: file.name.replace(/\.[^.]+$/, "").replace(/^\d+[_\s.-]+/, "").replace(/_/g, " "), sheets: wb.sheets, sheet: 0 };
     prepPending();
   } catch (e) { PENDING = { error: e.message }; }
   if (S.view !== "data") go("data"); else renderPending();
