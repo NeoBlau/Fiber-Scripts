@@ -1006,8 +1006,14 @@ function svgToPng(svg, name) {
   };
   img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(clone));
 }
-function download(blob, name) {
-  if (window.top !== window.self) { toast("В веб-версии сохранение файлов отключено браузером. Нажмите «Копировать» или откройте FiberPulse.html на компьютере.", 5000); return; }
+async function download(blob, name) {
+  if (window.top !== window.self) {   // веб-версия: сохранение через платформу, с подтверждением
+    const dl = window.claude && typeof window.claude.use === "function" ? await window.claude.use("downloads").catch(() => null) : null;
+    if (!dl) { toast("Здесь сохранение файлов недоступно. Нажмите «Копировать» или откройте FiberPulse.html на компьютере.", 5000); return; }
+    try { const r = await dl.save({ filename: name, data: blob }); if (r && r.status === "saved") toast("Файл «" + name + "» сохранён"); }
+    catch (e) { if (e && e.code === "declined") return; toast(e && e.code === "rate_limited" ? "Подождите немного и попробуйте снова" : "Не удалось сохранить файл. Используйте «Копировать».", 4000); }
+    return;
+  }
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   toast("Файл «" + name + "» сохранён в «Загрузки»");
