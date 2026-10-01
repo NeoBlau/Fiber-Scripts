@@ -1,0 +1,1792 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fiber Pulse</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Unbounded:wght@500;700&display=swap">
+<style>
+/* Layout: «пульт аналитика» — левая навигация, сверху полоса глобальных переключателей,
+   справа плотные рабочие панели. Цвет изменения: синий = рост, красный = падение (безопасно для дальтоников). */
+:root {
+  color-scheme: light;
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --surface-2: #eef1f6;
+  --surface-3: #e3e8f0;
+  --line: #d9dfe8;
+  --fg: #12161c;
+  --fg-2: #485263;
+  --fg-3: #7a8496;
+  --accent: #0e6f68;
+  --accent-ink: #ffffff;
+  --accent-soft: #d8efec;
+  --up: #2a78d6;
+  --down: #d93f3f;
+  --up-soft: #dbe9fb;
+  --down-soft: #fbdede;
+  --total: #5d6879;
+  --mid: #f0efec;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+  --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
+  --shadow: 0 1px 2px rgba(18, 22, 28, .06), 0 4px 16px rgba(18, 22, 28, .05);
+  --f-display: "Unbounded", "Golos Text", system-ui, sans-serif;
+  --f-body: "Golos Text", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --r: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0e1115; --surface: #161a20; --surface-2: #1c2129; --surface-3: #252b35; --line: #2b323d;
+    --fg: #eef1f5; --fg-2: #b2bccb; --fg-3: #7f8a9b;
+    --accent: #2bb5a6; --accent-ink: #062320; --accent-soft: #123532;
+    --up: #3987e5; --down: #e66767; --up-soft: #16283f; --down-soft: #3a1c1e; --total: #8f9aac; --mid: #383835;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 4px 16px rgba(0, 0, 0, .25);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1115; --surface: #161a20; --surface-2: #1c2129; --surface-3: #252b35; --line: #2b323d;
+  --fg: #eef1f5; --fg-2: #b2bccb; --fg-3: #7f8a9b;
+  --accent: #2bb5a6; --accent-ink: #062320; --accent-soft: #123532;
+  --up: #3987e5; --down: #e66767; --up-soft: #16283f; --down-soft: #3a1c1e; --total: #8f9aac; --mid: #383835;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 4px 16px rgba(0, 0, 0, .25);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.45 var(--f-body); -webkit-font-smoothing: antialiased;
+}
+[hidden] { display: none !important; }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.num, .mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+
+/* ---------- каркас ---------- */
+.app { display: grid; grid-template-columns: 212px minmax(0, 1fr); min-height: 100%; }
+.rail {
+  position: sticky; top: env(safe-area-inset-top, 0px); align-self: start; height: 100vh;
+  display: flex; flex-direction: column; gap: 4px; padding: 18px 12px; border-right: 1px solid var(--line);
+  background: var(--surface);
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 16px; }
+.brand-mark { width: 30px; height: 30px; flex: none; }
+.brand-name { font-family: var(--f-display); font-weight: 700; font-size: 15px; letter-spacing: .01em; line-height: 1.1; }
+.brand-name small { display: block; font: 500 10.5px/1.2 var(--f-body); color: var(--fg-3); letter-spacing: .06em; text-transform: uppercase; margin-top: 3px; }
+.nav-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px;
+  background: transparent; color: var(--fg-2); cursor: pointer; text-align: left; font-weight: 500;
+}
+.nav-btn svg { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.nav-btn:hover { background: var(--surface-2); color: var(--fg); }
+.nav-btn[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
+.nav-sep { height: 1px; background: var(--line); margin: 10px 6px; }
+.rail-foot { margin-top: auto; display: flex; flex-direction: column; gap: 6px; padding: 8px 4px 0; }
+.rail-foot .muted { font-size: 12px; }
+
+.main { min-width: 0; display: flex; flex-direction: column; }
+.toolbar {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+  padding: 12px 24px; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.tb-group { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tb-label { font-size: 11px; color: var(--fg-3); text-transform: uppercase; letter-spacing: .07em; font-weight: 600; }
+.content { padding: 22px 24px 48px; display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+
+/* ---------- элементы управления ---------- */
+.select, .input {
+  height: 34px; padding: 0 30px 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  min-width: 0; max-width: 100%;
+}
+.select { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--fg-3) 50%), linear-gradient(135deg, var(--fg-3) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 15px, calc(100% - 10px) 15px; background-size: 5px 5px; background-repeat: no-repeat; cursor: pointer; }
+.input { padding: 0 10px; }
+textarea.input { height: auto; padding: 8px 10px; resize: vertical; }
+.seg { display: inline-flex; padding: 3px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--line); gap: 2px; flex-wrap: wrap; }
+.seg button { border: 0; background: transparent; padding: 5px 10px; border-radius: 6px; cursor: pointer; color: var(--fg-2); font-weight: 500; white-space: nowrap; }
+.seg button:hover { color: var(--fg); }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 34px; padding: 0 14px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface); cursor: pointer; font-weight: 500; white-space: nowrap;
+}
+.btn:hover { border-color: var(--fg-3); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--fg-2); }
+.btn.ghost:hover { background: var(--surface-2); color: var(--fg); }
+.btn.sm { height: 28px; padding: 0 10px; font-size: 12.5px; }
+.btn svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.icon-btn { width: 34px; padding: 0; }
+.period-nav { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.period-nav button { border: 0; background: transparent; width: 30px; height: 32px; cursor: pointer; color: var(--fg-2); font-size: 16px; }
+.period-nav button:hover { color: var(--fg); }
+.period-nav select { border: 0; height: 32px; background: transparent; font-weight: 600; padding: 0 4px; cursor: pointer; max-width: 150px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.chip.up { background: var(--up-soft); color: var(--up); }
+.chip.down { background: var(--down-soft); color: var(--down); }
+.chip.flat { background: var(--surface-2); color: var(--fg-3); }
+.chip.new { background: var(--accent-soft); color: var(--accent); font-family: var(--f-body); }
+.tag { display: inline-block; padding: 1px 7px; border-radius: 5px; background: var(--surface-2); color: var(--fg-2); font-size: 11.5px; }
+.muted { color: var(--fg-3); }
+.dim { color: var(--fg-2); }
+
+/* ---------- панели ---------- */
+.page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px 18px; }
+.page-title { margin: 0; font: 600 22px/1.15 var(--f-display); letter-spacing: -.01em; text-wrap: balance; }
+.page-sub { margin: 4px 0 0; color: var(--fg-2); max-width: 70ch; }
+.grid { display: grid; gap: 16px; }
+.g-kpi { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+.g-2 { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+.g-2e { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); min-width: 0; }
+.card-h { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 14px 16px 6px; }
+.card-t { margin: 0; font-size: 14.5px; font-weight: 600; }
+.card-s { margin: 2px 0 0; font-size: 12.5px; color: var(--fg-3); }
+.card-b { padding: 6px 16px 16px; min-width: 0; }
+.card-tools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.kpi { padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 6px; }
+.kpi-label { font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--fg-3); font-weight: 600; }
+.kpi-value { font: 600 26px/1.1 var(--f-mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.kpi-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--fg-3); }
+.kpi-spark { height: 36px; margin-top: 2px; }
+.kpi-name { font-weight: 600; font-size: 15px; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+
+.insights { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+.insights li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; align-items: start; }
+.ins-ico { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+.ins-ico.up { background: var(--up-soft); color: var(--up); }
+.ins-ico.down { background: var(--down-soft); color: var(--down); }
+.ins-ico.info { background: var(--accent-soft); color: var(--accent); }
+.ins-ico.warn { background: var(--surface-3); color: var(--fg-2); }
+
+.banner { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; padding: 12px 16px;
+  border: 1px dashed var(--accent); border-radius: var(--r); background: var(--accent-soft); color: var(--fg); }
+.banner b { color: var(--accent); }
+
+/* ---------- графики ---------- */
+.chart { position: relative; width: 100%; min-width: 0; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.chart text { fill: var(--fg-3); font: 11px var(--f-body); }
+.chart .axis-num { font-family: var(--f-mono); font-size: 10.5px; }
+.chart .lbl-strong { fill: var(--fg); font-weight: 600; }
+.chart .grid-l { stroke: var(--line); stroke-width: 1; }
+.chart .zero-l { stroke: var(--fg-3); stroke-width: 1; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--fg-2); margin: 2px 0 8px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; cursor: default; }
+.legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.legend i.dash { background-image: linear-gradient(90deg, currentColor 55%, transparent 55%) !important; background-size: 5px 3px; }
+.tip {
+  position: fixed; z-index: 100; pointer-events: none; padding: 8px 10px; border-radius: 8px; background: var(--fg); color: var(--bg);
+  font-size: 12px; line-height: 1.4; box-shadow: var(--shadow); max-width: 300px;
+}
+.tip .t-h { font-weight: 600; margin-bottom: 3px; }
+.tip .t-r { display: flex; justify-content: space-between; gap: 14px; }
+.tip .t-r b { font-family: var(--f-mono); font-weight: 600; }
+.tip .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+.empty { padding: 28px 16px; text-align: center; color: var(--fg-3); }
+
+/* ---------- таблицы ---------- */
+.tbl-wrap { overflow: auto; max-height: 70vh; border-top: 1px solid var(--line); }
+table.tbl { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }
+.tbl th, .tbl td { padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; text-align: right; }
+.tbl th { position: sticky; top: 0; z-index: 2; background: var(--surface); color: var(--fg-3); font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; cursor: pointer; user-select: none; }
+.tbl th.nosort { cursor: default; }
+.tbl th:hover:not(.nosort) { color: var(--fg); }
+.tbl th .arr { color: var(--accent); }
+.tbl td.l, .tbl th.l { text-align: left; }
+.tbl td.pos { position: sticky; left: 0; z-index: 1; background: var(--surface); max-width: 280px; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.tbl th.pos { left: 0; z-index: 3; }
+.tbl tbody tr { cursor: pointer; }
+.tbl tbody tr:hover td { background: var(--surface-2); }
+.tbl tr.grp td { background: var(--surface-2); font-weight: 600; cursor: default; }
+.tbl tr.tot td { font-weight: 700; border-top: 2px solid var(--line); background: var(--surface); position: sticky; bottom: 0; }
+.tbl td .num { font-size: 12.5px; }
+.bar-cell { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.share-bar { width: 52px; height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+.share-bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+
+/* тепловая карта */
+.hm-wrap { overflow: auto; max-height: 72vh; }
+table.hm { border-collapse: separate; border-spacing: 2px; font-size: 11px; }
+.hm th { position: sticky; top: 0; z-index: 2; background: var(--surface); color: var(--fg-3); font-weight: 500; padding: 4px 2px; white-space: nowrap; font-size: 10.5px; }
+.hm td { min-width: 46px; height: 24px; text-align: center; border-radius: 4px; font-family: var(--f-mono); font-variant-numeric: tabular-nums; font-size: 10.5px; padding: 0 3px; }
+.hm td.nm { position: sticky; left: 0; z-index: 1; background: var(--surface); text-align: left; font-family: var(--f-body); font-size: 12px; color: var(--fg); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 10px; cursor: pointer; }
+.hm th.nm { left: 0; z-index: 3; }
+.hm-scale { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--fg-3); }
+.hm-scale .ramp { width: 160px; height: 8px; border-radius: 4px; }
+
+/* данные */
+.drop {
+  border: 2px dashed var(--line); border-radius: 12px; padding: 26px 18px; text-align: center; background: var(--surface);
+  display: flex; flex-direction: column; align-items: center; gap: 10px; transition: border-color .15s, background .15s;
+}
+.drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.drop h3 { margin: 0; font: 600 17px var(--f-display); }
+.drop p { margin: 0; color: var(--fg-2); max-width: 60ch; }
+.drop-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.map-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.map-col { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.map-col .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.map-col .ex { font-size: 11.5px; color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--f-mono); }
+.preview-wrap { overflow: auto; max-height: 260px; border: 1px solid var(--line); border-radius: 8px; }
+.preview { border-collapse: collapse; font-size: 12px; }
+.preview td, .preview th { border-bottom: 1px solid var(--line); padding: 4px 8px; white-space: nowrap; text-align: left; }
+.preview th { background: var(--surface-2); position: sticky; top: 0; }
+.steps { display: flex; flex-wrap: wrap; gap: 10px; counter-reset: s; margin: 0; padding: 0; list-style: none; }
+.steps li { counter-increment: s; display: flex; gap: 8px; align-items: center; color: var(--fg-2); font-size: 13px; }
+.steps li::before { content: counter(s); width: 20px; height: 20px; border-radius: 50%; background: var(--surface-3); color: var(--fg); display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+.alert { padding: 10px 12px; border-radius: 8px; background: var(--down-soft); color: var(--fg); border: 1px solid var(--down); }
+.okmsg { padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); border: 1px solid var(--accent); }
+
+/* формула */
+.formula-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.metric-chip { border: 1px solid var(--line); background: var(--surface-2); border-radius: 999px; padding: 3px 10px; cursor: pointer; font-size: 12.5px; }
+.metric-chip:hover { border-color: var(--accent); color: var(--accent); }
+.op-chip { min-width: 30px; }
+.slider-row { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(0, 2fr) 70px; gap: 10px; align-items: center; }
+.slider-row input[type=range] { width: 100%; accent-color: var(--accent); }
+.slider-row .val { font-family: var(--f-mono); text-align: right; font-weight: 600; }
+
+.toast { position: fixed; left: 50%; bottom: calc(22px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--fg); color: var(--bg);
+  padding: 9px 14px; border-radius: 8px; z-index: 200; box-shadow: var(--shadow); font-weight: 500; }
+
+@media (max-width: 1100px) { .g-2 { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 820px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .rail { position: static; height: auto; flex-direction: row; flex-wrap: nowrap; overflow-x: auto; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--line); gap: 2px; }
+  .brand { padding: 0 8px 0 0; }
+  .brand-name small, .nav-sep, .rail-foot { display: none; }
+  .nav-btn { width: auto; white-space: nowrap; padding: 7px 9px; }
+  .toolbar { position: static; padding: 10px 16px; }
+  .content { padding: 16px 16px 40px; }
+  .g-2e { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail" aria-label="Разделы">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="1" y="1" width="30" height="30" rx="8" fill="var(--accent)"></rect>
+        <polyline points="6,20 11,20 14,10 18,24 21,15 26,15" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></polyline>
+      </svg>
+      <div class="brand-name">Fiber Pulse<small>динамика позиций</small></div>
+    </div>
+    <button class="nav-btn" data-view="overview"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Обзор</button>
+    <button class="nav-btn" data-view="table"><svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18M9 3v18"/></svg>Позиции</button>
+    <button class="nav-btn" data-view="heat"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="5" height="5" rx="1"/><rect x="10" y="3" width="5" height="5" rx="1"/><rect x="17" y="3" width="4" height="5" rx="1"/><rect x="3" y="10" width="5" height="5" rx="1"/><rect x="10" y="10" width="5" height="5" rx="1"/><rect x="17" y="10" width="4" height="5" rx="1"/><rect x="3" y="17" width="5" height="4" rx="1"/><rect x="10" y="17" width="5" height="4" rx="1"/><rect x="17" y="17" width="4" height="4" rx="1"/></svg>Карта изменений</button>
+    <button class="nav-btn" data-view="detail"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>Карточка позиции</button>
+    <button class="nav-btn" data-view="factors"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Факторы</button>
+    <button class="nav-btn" data-view="forecast"><svg viewBox="0 0 24 24"><path d="M3 17l5-5 4 3 4-6"/><path d="M16 9l5-3" stroke-dasharray="2 2.5"/></svg>Прогноз и сценарии</button>
+    <div class="nav-sep"></div>
+    <button class="nav-btn" data-view="data"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 17v3h16v-3"/></svg>Данные</button>
+    <div class="rail-foot">
+      <div class="seg" role="group" aria-label="Тема">
+        <button id="th-auto" data-theme-set="auto" title="Как в системе">Авто</button>
+        <button id="th-light" data-theme-set="light" title="Светлая">Свет</button>
+        <button id="th-dark" data-theme-set="dark" title="Тёмная">Тьма</button>
+      </div>
+      <div class="muted" id="ds-info"></div>
+    </div>
+  </nav>
+
+  <div class="main">
+    <div class="toolbar" id="toolbar">
+      <div class="tb-group"><span class="tb-label">Показатель</span><select class="select" id="tb-metric" aria-label="Показатель"></select></div>
+      <div class="tb-group"><span class="tb-label">Шаг</span>
+        <div class="seg" id="tb-gran" role="group" aria-label="Шаг">
+          <button data-g="M">Месяц</button><button data-g="Q">Квартал</button><button data-g="Y">Год</button>
+        </div>
+      </div>
+      <div class="tb-group"><span class="tb-label">Период</span>
+        <div class="period-nav">
+          <button id="tb-prev" aria-label="Предыдущий период" title="Предыдущий (←)">‹</button>
+          <select id="tb-period" aria-label="Текущий период"></select>
+          <button id="tb-next" aria-label="Следующий период" title="Следующий (→)">›</button>
+        </div>
+      </div>
+      <div class="tb-group"><span class="tb-label">Сравнить с</span>
+        <div class="seg" id="tb-cmp" role="group" aria-label="Сравнение">
+          <button data-c="prev">Пред. периодом</button><button data-c="yoy">Год назад</button><button data-c="ytd">С начала года</button><button data-c="custom">Выбрать…</button>
+        </div>
+        <select class="select" id="tb-custom" aria-label="Период для сравнения" hidden></select>
+      </div>
+      <div class="tb-group"><span class="tb-label">Группа</span><select class="select" id="tb-group" aria-label="Группа"></select></div>
+    </div>
+    <main class="content" id="content"></main>
+  </div>
+</div>
+<div class="tip" id="tip" hidden></div>
+<div class="toast" id="toast" hidden></div>
+<input type="file" id="file-input" accept=".csv,.tsv,.txt,.xlsx" hidden>
+
+<script>
+"use strict";
+/* =====================================================================
+   Fiber Pulse — отслеживание динамики позиций (месяц к месяцу, год к году)
+   Один файл, без внешних библиотек. Работает офлайн.
+   ===================================================================== */
+
+/* ---------------------------- утилиты ---------------------------- */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const isNum = v => typeof v === "number" && Number.isFinite(v);
+const sum = a => { let s = 0, n = 0; for (const v of a) if (isNum(v)) { s += v; n++; } return n ? s : NaN; };
+const mean = a => { let s = 0, n = 0; for (const v of a) if (isNum(v)) { s += v; n++; } return n ? s / n : NaN; };
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("fiberpulse:" + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem("fiberpulse:" + k, JSON.stringify(v)); return true; } catch (e) { return false; } },
+  del(k) { try { localStorage.removeItem("fiberpulse:" + k); } catch (e) {} }
+};
+function toast(msg, ms = 2600) { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast._t); toast._t = setTimeout(() => t.hidden = true, ms); }
+
+/* ---------- числа ---------- */
+const NF = {};
+function nf(maxFrac, minFrac = 0) { const k = maxFrac + ":" + minFrac; return NF[k] || (NF[k] = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: maxFrac, minimumFractionDigits: minFrac })); }
+function fmt(v) {
+  if (!isNum(v)) return "—";
+  const a = Math.abs(v);
+  if (a >= 1000) return nf(0).format(v);
+  if (a >= 1) return nf(2).format(v);
+  if (a === 0) return "0";
+  const d = Math.min(8, 2 - Math.floor(Math.log10(a)));
+  return nf(d).format(v);
+}
+function fmtC(v) { // компактно: 1,2 млн
+  if (!isNum(v)) return "—";
+  const a = Math.abs(v);
+  if (a >= 1e9) return nf(a >= 1e10 ? 1 : 2).format(v / 1e9) + " млрд";
+  if (a >= 1e6) return nf(a >= 1e7 ? 1 : 2).format(v / 1e6) + " млн";
+  if (a >= 1e4) return nf(a >= 1e5 ? 0 : 1).format(v / 1e3) + " тыс.";
+  return fmt(v);
+}
+function fmtS(v) { return !isNum(v) ? "—" : (v > 0 ? "+" : v < 0 ? "−" : "") + fmtC(Math.abs(v)); }
+function fmtP(v, d = 1) { if (!isNum(v)) return "—"; return (v > 0 ? "+" : v < 0 ? "−" : "") + nf(d, d).format(Math.abs(v)) + "%"; }
+function pctCh(b, a) { return isNum(a) && isNum(b) && a !== 0 ? (b - a) / Math.abs(a) * 100 : NaN; }
+function chip(p, abs) {
+  if (abs === "new") return `<span class="chip new">новая</span>`;
+  if (abs === "gone") return `<span class="chip down">выбыла</span>`;
+  if (!isNum(p)) return `<span class="chip flat">—</span>`;
+  const c = p > 0.05 ? "up" : p < -0.05 ? "down" : "flat";
+  return `<span class="chip ${c}">${c === "up" ? "▲" : c === "down" ? "▼" : "•"} ${fmtP(p)}</span>`;
+}
+
+/* Текст -> число: «1 234,5», «12,5%», «(1 234)», «−5», «1,234.5» */
+function parseNum(x) {
+  if (typeof x === "number") return Number.isFinite(x) ? x : NaN;
+  if (x == null) return NaN;
+  let s = String(x).trim();
+  if (!s) return NaN;
+  s = s.replace(/[     ']/g, "").replace(/[−–—]/g, "-");
+  let neg = false;
+  if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
+  s = s.replace(/%$/, "").replace(/^[₽$€]|[₽$€]$|руб\.?$|р\.?$/gi, "");
+  if (/,/.test(s) && /\./.test(s)) { if (s.lastIndexOf(",") > s.lastIndexOf(".")) s = s.replace(/\./g, "").replace(",", "."); else s = s.replace(/,/g, ""); }
+  else if (/,/.test(s)) { s = (s.match(/,/g).length > 1) ? s.replace(/,/g, "") : s.replace(",", "."); }
+  if (!/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(s)) return NaN;
+  const v = parseFloat(s);
+  return neg ? -v : v;
+}
+
+/* ---------- периоды ---------- */
+// Ключ месяца: год*12 + (месяц-1). Квартал хранится по первому месяцу, год — по январю.
+const MON_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+const MON_FULL = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+const MON_PATTERNS = [
+  [/^(янв|jan)/i, 0], [/^(фев|feb)/i, 1], [/^(мар|mar)/i, 2], [/^(апр|apr)/i, 3], [/^(мая|май|may)/i, 4], [/^(июн|jun)/i, 5],
+  [/^(июл|jul)/i, 6], [/^(авг|aug)/i, 7], [/^(сен|sep)/i, 8], [/^(окт|oct)/i, 9], [/^(ноя|nov)/i, 10], [/^(дек|dec)/i, 11]
+];
+const ROMAN = { i: 1, ii: 2, iii: 3, iv: 4 };
+function monthWord(w) { for (const [re, m] of MON_PATTERNS) if (re.test(w)) return m; return -1; }
+// -> {key, g:'M'|'Q'|'Y'} или null
+function parsePeriod(raw) {
+  if (raw == null) return null;
+  if (raw instanceof Date && !isNaN(raw)) return { key: raw.getUTCFullYear() * 12 + raw.getUTCMonth(), g: "M" };
+  let s = String(raw).trim().toLowerCase().replace(/\s+/g, " ");
+  if (!s) return null;
+  let m;
+  const Y = y => { y = +y; if (y < 100) y += 2000; return y >= 1900 && y <= 2200 ? y : NaN; };
+  // 2024-01(-15), 2024.01, 2024/01, 202401
+  if ((m = s.match(/^(\d{4})[-./ ](\d{1,2})(?:[-./ ]\d{1,2})?(?:[ t].*)?$/)) && +m[2] >= 1 && +m[2] <= 12) return { key: Y(m[1]) * 12 + (+m[2] - 1), g: "M" };
+  if ((m = s.match(/^(\d{4})(\d{2})$/)) && +m[2] >= 1 && +m[2] <= 12 && Y(m[1])) return { key: Y(m[1]) * 12 + (+m[2] - 1), g: "M" };
+  // 15.01.2024, 01.2024, 01/2024, 1-2024
+  if ((m = s.match(/^\d{1,2}[./-](\d{1,2})[./-](\d{2,4})(?: .*)?$/)) && +m[1] >= 1 && +m[1] <= 12 && Y(m[2])) return { key: Y(m[2]) * 12 + (+m[1] - 1), g: "M" };
+  if ((m = s.match(/^(\d{1,2})[./-](\d{4})$/)) && +m[1] >= 1 && +m[1] <= 12) return { key: Y(m[2]) * 12 + (+m[1] - 1), g: "M" };
+  // кварталы: 2024 q1, q1 2024, 1 кв 2024, i кв. 2024, 2024-q1, 1q24
+  if ((m = s.match(/^(\d{4})[- ]?(?:q|кв\.?|квартал)[ ]?([1-4]|iv|iii|ii|i)$/)) ) return qk(m[1], m[2]);
+  if ((m = s.match(/^(?:q|кв\.?)[ ]?([1-4])[ ,-]*(\d{2,4})$/))) return qk(m[2], m[1]);
+  if ((m = s.match(/^([1-4]|iv|iii|ii|i)[ -]?(?:q|кв\.?|квартал)[ .,-]*(\d{2,4})(?: ?г\.?)?$/))) return qk(m[2], m[1]);
+  function qk(y, q) { q = ROMAN[q] || +q; y = Y(y); return y ? { key: y * 12 + (q - 1) * 3, g: "Q" } : null; }
+  // «янв 2024», «январь 2024 г.», «jan-24», «2024 январь»
+  if ((m = s.match(/^([a-zа-яё]+)\.?[ ,-]*(\d{2,4})(?: ?г\.?)?$/i))) { const mo = monthWord(m[1]); const y = Y(m[2]); if (mo >= 0 && y) return { key: y * 12 + mo, g: "M" }; }
+  if ((m = s.match(/^(\d{4})[ ,-]*([a-zа-яё]+)\.?$/i))) { const mo = monthWord(m[2]); const y = Y(m[1]); if (mo >= 0 && y) return { key: y * 12 + mo, g: "M" }; }
+  // год
+  if ((m = s.match(/^(\d{4})(?: ?г\.?|год)?$/)) && Y(m[1])) return { key: Y(m[1]) * 12, g: "Y" };
+  return null;
+}
+const yearOf = k => Math.floor(k / 12), monOf = k => ((k % 12) + 12) % 12;
+function gKey(k, g) { return g === "M" ? k : g === "Q" ? yearOf(k) * 12 + Math.floor(monOf(k) / 3) * 3 : yearOf(k) * 12; }
+function pLabel(k, g, long) {
+  const y = yearOf(k), m = monOf(k);
+  if (g === "Y") return String(y);
+  if (g === "Q") return ["I", "II", "III", "IV"][Math.floor(m / 3)] + " кв " + y;
+  return long ? MON_FULL[m] + " " + y : MON_SHORT[m] + " " + String(y);
+}
+const GSTEP = { M: 1, Q: 3, Y: 12 };
+const GORD = { M: 0, Q: 1, Y: 2 };
+const GNAME = { M: "месяц", Q: "квартал", Y: "год" };
+
+/* ---------------------------- импорт ---------------------------- */
+async function readFileToGrid(file) {
+  const buf = await file.arrayBuffer();
+  const u8 = new Uint8Array(buf);
+  if (u8[0] === 0x50 && u8[1] === 0x4b) return await readXlsx(u8);
+  if (/\.xls$/i.test(file.name)) throw new Error("Старый формат .xls не поддерживается. В Excel: «Файл → Сохранить как → Книга Excel (.xlsx)» или CSV.");
+  let text;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(u8); }
+  catch (e) { text = new TextDecoder("windows-1251").decode(u8); }
+  return { sheets: [{ name: file.name, grid: parseDelimited(text) }] };
+}
+function parseDelimited(text) {
+  text = text.replace(/^﻿/, "");
+  const lines = text.split(/\r\n|\n|\r/).slice(0, 20);
+  const cands = ["\t", ";", ",", "|"];
+  let best = ";", bestScore = -1;
+  for (const d of cands) {
+    const counts = lines.filter(l => l.trim()).map(l => splitLine(l, d).length);
+    if (!counts.length) continue;
+    const mode = counts.sort((a, b) => a - b)[Math.floor(counts.length / 2)];
+    const score = mode > 1 ? mode * 10 + counts.filter(c => c === mode).length : 0;
+    if (score > bestScore) { bestScore = score; best = d; }
+  }
+  const rows = [];
+  let row = [], cur = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += c;
+    } else if (c === '"' && cur === "") q = true;
+    else if (c === best) { row.push(cur); cur = ""; }
+    else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(cur); rows.push(row); row = []; cur = ""; }
+    else cur += c;
+  }
+  if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
+  return rows.filter(r => r.some(v => String(v).trim() !== ""));
+}
+function splitLine(l, d) { let n = 1, q = false; for (const c of l) { if (c === '"') q = !q; else if (c === d && !q) n++; } return new Array(n); }
+
+/* --- минимальный читатель XLSX (zip + XML), без библиотек --- */
+async function inflateRaw(data) {
+  if (typeof DecompressionStream === "undefined") throw new Error("Браузер не умеет распаковывать XLSX. Обновите браузер или сохраните файл как CSV.");
+  const ds = new DecompressionStream("deflate-raw");
+  const out = new Response(new Blob([data]).stream().pipeThrough(ds));
+  return new Uint8Array(await out.arrayBuffer());
+}
+async function unzip(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error("Файл повреждён или это не XLSX.");
+  const n = dv.getUint16(eocd + 10, true); let off = dv.getUint32(eocd + 16, true);
+  const files = {};
+  const dec = new TextDecoder();
+  for (let i = 0; i < n; i++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) break;
+    const method = dv.getUint16(off + 10, true), csize = dv.getUint32(off + 20, true);
+    const nlen = dv.getUint16(off + 28, true), elen = dv.getUint16(off + 30, true), clen = dv.getUint16(off + 32, true);
+    const lho = dv.getUint32(off + 42, true);
+    const name = dec.decode(u8.subarray(off + 46, off + 46 + nlen));
+    files[name] = { method, csize, lho };
+    off += 46 + nlen + elen + clen;
+  }
+  return {
+    async read(name) {
+      const f = files[name]; if (!f) return null;
+      const lnl = dv.getUint16(f.lho + 26, true), lel = dv.getUint16(f.lho + 28, true);
+      const start = f.lho + 30 + lnl + lel;
+      const raw = u8.subarray(start, start + f.csize);
+      const data = f.method === 0 ? raw : await inflateRaw(raw);
+      return new TextDecoder("utf-8").decode(data);
+    }, names: Object.keys(files)
+  };
+}
+async function readXlsx(u8) {
+  const z = await unzip(u8);
+  const P = s => new DOMParser().parseFromString(s, "application/xml");
+  const shared = [];
+  const ss = await z.read("xl/sharedStrings.xml");
+  if (ss) for (const si of P(ss).getElementsByTagName("si")) shared.push(Array.from(si.getElementsByTagName("t")).map(t => t.textContent).join(""));
+  // стили: какие форматы — даты
+  const dateStyles = new Set();
+  const st = await z.read("xl/styles.xml");
+  if (st) {
+    const doc = P(st); const custom = {};
+    for (const f of doc.getElementsByTagName("numFmt")) custom[f.getAttribute("numFmtId")] = f.getAttribute("formatCode") || "";
+    const xfs = doc.getElementsByTagName("cellXfs")[0];
+    if (xfs) Array.from(xfs.getElementsByTagName("xf")).forEach((xf, i) => {
+      const id = +xf.getAttribute("numFmtId");
+      const code = (custom[id] || "").replace(/"[^"]*"|\[[^\]]*\]/g, "");
+      if ((id >= 14 && id <= 22) || (id >= 45 && id <= 47) || /[dmy]/i.test(code) && !/^[#0.,% ]*$/.test(code)) dateStyles.add(i);
+    });
+  }
+  const wb = P(await z.read("xl/workbook.xml"));
+  const rels = P(await z.read("xl/_rels/workbook.xml.rels") || "<r/>");
+  const relMap = {};
+  for (const r of rels.getElementsByTagName("Relationship")) relMap[r.getAttribute("Id")] = r.getAttribute("Target");
+  const sheets = [];
+  for (const sh of wb.getElementsByTagName("sheet")) {
+    const rid = sh.getAttribute("r:id") || sh.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
+    let target = relMap[rid] || ""; target = target.replace(/^\//, "");
+    const path = target.startsWith("xl/") ? target : "xl/" + target;
+    const xml = await z.read(path); if (!xml) continue;
+    const grid = [];
+    for (const row of P(xml).getElementsByTagName("row")) {
+      const r = +row.getAttribute("r") - 1; const arr = grid[r] = grid[r] || [];
+      for (const c of row.getElementsByTagName("c")) {
+        const ref = c.getAttribute("r"); const col = colIndex(ref.replace(/\d+/g, ""));
+        const t = c.getAttribute("t"), s = +c.getAttribute("s");
+        const v = c.getElementsByTagName("v")[0];
+        let val = "";
+        if (t === "s") val = shared[+v.textContent] ?? "";
+        else if (t === "inlineStr") val = Array.from(c.getElementsByTagName("t")).map(x => x.textContent).join("");
+        else if (t === "str" || t === "e") val = v ? v.textContent : "";
+        else if (t === "b") val = v ? (v.textContent === "1" ? "TRUE" : "FALSE") : "";
+        else if (v) { const n = +v.textContent; val = dateStyles.has(s) && n > 0 && n < 80000 ? new Date(Math.round((n - 25569) * 864e5)) : n; }
+        arr[col] = val;
+      }
+    }
+    const width = Math.max(0, ...grid.filter(Boolean).map(r => r.length));
+    const dense = grid.filter(Boolean).map(r => Array.from({ length: width }, (_, i) => r[i] ?? ""));
+    sheets.push({ name: sh.getAttribute("name"), grid: dense.filter(r => r.some(v => String(v).trim() !== "")) });
+  }
+  if (!sheets.length) throw new Error("В книге не найдено листов с данными.");
+  return { sheets };
+}
+function colIndex(letters) { let n = 0; for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64); return n - 1; }
+
+/* --- распознавание структуры таблицы --- */
+const ROLE_NAMES = { pos: "Позиция", group: "Группа", period: "Период (значения)", metricName: "Название показателя", value: "Числовой показатель", pcol: "Период (столбец)", skip: "Не использовать" };
+function cellText(v) { return v instanceof Date ? v.toISOString().slice(0, 10) : String(v ?? "").trim(); }
+function detectLayout(grid) {
+  // строка заголовков — первая строка, где ≥2 непустых ячеек
+  let h = grid.findIndex(r => r.filter(v => cellText(v) !== "").length >= 2);
+  if (h < 0) throw new Error("Не нашёл таблицу: нужно минимум 2 столбца с заголовками.");
+  const header = grid[h].map((v, i) => cellText(v) || ("Столбец " + (i + 1)));
+  const rows = grid.slice(h + 1).filter(r => r.some(v => cellText(v) !== ""));
+  const ncol = header.length;
+  const cols = header.map((name, i) => {
+    const vals = rows.map(r => r[i]).filter(v => cellText(v) !== "");
+    const nums = vals.filter(v => isNum(typeof v === "number" ? v : parseNum(v))).length;
+    const pers = vals.filter(v => parsePeriod(v)).length;
+    const uniq = new Set(vals.map(cellText)).size;
+    return { i, name, n: vals.length, numFrac: vals.length ? nums / vals.length : 0, perFrac: vals.length ? pers / vals.length : 0, uniq,
+      headerPeriod: parsePeriod(grid[h][i]), example: vals.slice(0, 3).map(cellText).join(" · ") };
+  });
+  const roles = new Array(ncol).fill("skip");
+  const periodHeaders = cols.filter(c => c.headerPeriod && c.numFrac >= 0.6);
+  const nameLike = (c, re) => re.test(c.name.toLowerCase());
+  if (periodHeaders.length >= 2) {
+    // широкая таблица: позиции в строках, периоды в столбцах
+    for (const c of periodHeaders) roles[c.i] = "pcol";
+    const text = cols.filter(c => roles[c.i] === "skip" && c.numFrac < 0.6);
+    const metricCol = text.find(c => nameLike(c, /показат|метрик|metric|measure|kpi|единиц/)) ;
+    if (metricCol) roles[metricCol.i] = "metricName";
+    const rest = text.filter(c => c !== metricCol);
+    assignPosGroup(rest, roles);
+  } else {
+    // длинная таблица
+    const dateName = /год|year|период|period|дата|date|месяц|month|квартал|quarter/;
+    let pc = cols.filter(c => c.perFrac >= 0.8 && (c.numFrac < 0.99 || nameLike(c, dateName)))
+      .sort((a, b) => (nameLike(b, /период|period|дата|date|месяц|month|год|year/) - nameLike(a, /период|period|дата|date|месяц|month|год|year/)) || b.perFrac - a.perFrac);
+    // отдельные столбцы «год» и «месяц»
+    const yc = cols.find(c => nameLike(c, /^(год|year)$/)), mc = cols.find(c => nameLike(c, /^(месяц|month|мес\.?)$/));
+    if (yc && mc) { roles[yc.i] = "year"; roles[mc.i] = "month"; pc = []; }
+    else if (pc.length) roles[pc[0].i] = "period";
+    else throw new Error("Не нашёл периоды. Нужны либо столбцы-месяцы (янв 2024, 2024-01, 01.2024…), либо столбец с датами/периодами.");
+    const free = cols.filter(c => roles[c.i] === "skip");
+    for (const c of free) if (c.numFrac >= 0.8) roles[c.i] = "value";
+    const text = free.filter(c => roles[c.i] === "skip");
+    const metricCol = text.find(c => nameLike(c, /показат|метрик|metric|measure|kpi/));
+    if (metricCol) roles[metricCol.i] = "metricName";
+    assignPosGroup(text.filter(c => c !== metricCol), roles);
+  }
+  return { headerRow: h, header, rows, cols, roles };
+}
+function assignPosGroup(text, roles) {
+  if (!text.length) return;
+  if (text.length === 1) { roles[text[0].i] = "pos"; return; }
+  const byName = c => /групп|катег|направ|отдел|сегмент|group|categ|segment|dept|бренд|brand|регион|region/.test(c.name.toLowerCase());
+  let g = text.find(byName);
+  let p = text.find(c => c !== g && /позиц|товар|наимен|статья|sku|item|product|name|название|артикул|продукт|услуг|клиент|position/.test(c.name.toLowerCase()));
+  if (!p) p = text.filter(c => c !== g).sort((a, b) => b.uniq - a.uniq)[0];
+  if (!g) { const cand = text.filter(c => c !== p).sort((a, b) => a.uniq - b.uniq)[0]; if (cand && cand.uniq < p.uniq) g = cand; }
+  roles[p.i] = "pos"; if (g) roles[g.i] = "group";
+}
+function buildDataset(layout, opts = {}) {
+  const { header, rows, roles } = layout;
+  const idx = r => roles.map((x, i) => x === r ? i : -1).filter(i => i >= 0);
+  const posI = idx("pos"), grpI = idx("group")[0], metI = idx("metricName")[0];
+  const posKey = r => posI.length ? posI.map(i => cellText(r[i])).filter(Boolean).join(" · ") : "Итого";
+  const recs = []; // [pos, group, metric, key, gran, value]
+  const bad = [];
+  if (roles.includes("pcol")) {
+    const pcols = idx("pcol").map(i => ({ i, p: parsePeriod(layout.header[i]) || parsePeriod(layout.cols[i].headerPeriod && header[i]) })).filter(x => x.p);
+    for (const r of rows) {
+      const pos = posKey(r); if (!pos) continue;
+      if (/^(итого|всего|total|итог)$/i.test(pos)) continue;
+      const metric = metI != null ? (cellText(r[metI]) || opts.metricName || "Значение") : (opts.metricName || "Значение");
+      for (const pc of pcols) {
+        const raw = r[pc.i]; if (cellText(raw) === "") continue;
+        const v = typeof raw === "number" ? raw : parseNum(raw);
+        if (!isNum(v)) { if (bad.length < 5) bad.push(`«${cellText(raw)}» (${pos}, ${header[pc.i]})`); continue; }
+        recs.push([pos, grpI != null ? cellText(r[grpI]) : "", metric, pc.p.key, pc.p.g, v]);
+      }
+    }
+  } else {
+    const perI = idx("period")[0], yI = idx("year")[0], mI = idx("month")[0];
+    const valI = idx("value");
+    if (!valI.length) throw new Error("Не выбран ни один числовой столбец (роль «Числовой показатель»).");
+    for (const r of rows) {
+      let p;
+      if (perI != null) p = parsePeriod(r[perI]);
+      else { const y = parseNum(r[yI]); let mo = parseNum(r[mI]); if (!isNum(mo)) mo = monthWord(cellText(r[mI]).toLowerCase()) + 1; p = isNum(y) && mo >= 1 && mo <= 12 ? { key: y * 12 + mo - 1, g: "M" } : null; }
+      if (!p) { if (bad.length < 5) bad.push(`период «${cellText(perI != null ? r[perI] : r[yI] + "-" + r[mI])}»`); continue; }
+      const pos = posKey(r); if (!pos) continue;
+      for (const vi of valI) {
+        const raw = r[vi]; if (cellText(raw) === "") continue;
+        const v = typeof raw === "number" ? raw : parseNum(raw);
+        if (!isNum(v)) { if (bad.length < 5) bad.push(`«${cellText(raw)}» (${header[vi]})`); continue; }
+        const metric = metI != null ? (cellText(r[metI]) || header[vi]) : header[vi];
+        recs.push([pos, grpI != null ? cellText(r[grpI]) : "", metric, p.key, p.g, v]);
+      }
+    }
+  }
+  if (!recs.length) throw new Error("После разбора не осталось ни одного значения. Проверьте роли столбцов.");
+  return datasetFromRecords(recs, { name: opts.name || "Мои данные", bad, aggOverride: opts.agg });
+}
+function guessAgg(name) { return /цен|price|тариф|ставк|rate|курс|%|процент|доля|share|рентаб|маржинальн|средн|avg|average|чек|остат|stock|числен|штат|headcount|kpi|индекс|index/i.test(name) ? "avg" : "sum"; }
+function datasetFromRecords(recs, { name, bad = [], aggOverride = {} }) {
+  const gOrd = Math.min(...recs.map(r => GORD[r[4]]));
+  const base = ["M", "Q", "Y"][gOrd];
+  const posMap = new Map(), metMap = new Map(), keySet = new Set();
+  for (const r of recs) {
+    if (!posMap.has(r[0])) posMap.set(r[0], { name: r[0], group: r[1] || "" });
+    else if (r[1] && !posMap.get(r[0]).group) posMap.get(r[0]).group = r[1];
+    if (!metMap.has(r[2])) metMap.set(r[2], { name: r[2], agg: aggOverride[r[2]] || guessAgg(r[2]) });
+    keySet.add(gKey(r[3], base));
+  }
+  const keysSorted = Array.from(keySet).sort((a, b) => a - b);
+  // непрерывная шкала от первого до последнего периода
+  const keys = []; for (let k = keysSorted[0]; k <= keysSorted[keysSorted.length - 1]; k += GSTEP[base]) keys.push(k);
+  const positions = Array.from(posMap.values());
+  const metrics = Array.from(metMap.values());
+  const pIndex = new Map(positions.map((p, i) => [p.name, i]));
+  const kIndex = new Map(keys.map((k, i) => [k, i]));
+  const data = {}, cnt = {};
+  for (const m of metrics) { data[m.name] = new Array(positions.length * keys.length).fill(NaN); cnt[m.name] = new Array(positions.length * keys.length).fill(0); }
+  let dup = 0;
+  for (const r of recs) {
+    const m = metMap.get(r[2]);
+    const j = pIndex.get(r[0]) * keys.length + kIndex.get(gKey(r[3], base));
+    const arr = data[r[2]], c = cnt[r[2]];
+    if (isNum(arr[j])) { dup++; arr[j] = m.agg === "avg" ? (arr[j] * c[j] + r[5]) / (c[j] + 1) : arr[j] + r[5]; }
+    else arr[j] = r[5];
+    c[j]++;
+  }
+  return { name, base, keys, positions, metrics, data, derived: [], bad, dup, created: Date.now() };
+}
+
+/* ---------------------------- модель данных ---------------------------- */
+let DS = null;             // текущий набор данных
+const CACHE = new Map();   // кэш агрегаций
+function metricInfo(name) { return DS.metrics.find(m => m.name === name) || DS.derived.find(m => m.name === name); }
+function allMetricNames() { return DS.metrics.map(m => m.name).concat(DS.derived.map(d => d.name)); }
+// Производные показатели (формулы) считаются на базовом шаге по каждой позиции
+function compileFormula(text, names) {
+  const vars = [];
+  let expr = String(text).replace(/\[([^\]]+)\]/g, (_, nm) => { nm = nm.trim(); let i = vars.indexOf(nm); if (i < 0) { if (!names.includes(nm)) throw new Error(`Нет показателя «${nm}»`); vars.push(nm); i = vars.length - 1; } return `v[${i}]`; });
+  expr = expr.replace(/×/g, "*").replace(/÷/g, "/").replace(/−/g, "-").replace(/,/g, ".").replace(/\^/g, "**");
+  if (!/^[\sv\[\]0-9.+\-*/()]*$/.test(expr)) throw new Error("В формуле допустимы только [показатели], числа и знаки + − × / ( ) ^");
+  if (!vars.length) throw new Error("В формуле нет ни одного показателя. Нажмите на название показателя, чтобы вставить его.");
+  let fn;
+  try { fn = new Function("v", `"use strict"; return (${expr});`); fn(vars.map(() => 1)); }
+  catch (e) { throw new Error("Формула записана с ошибкой: проверьте скобки и знаки."); }
+  return { vars, fn, text };
+}
+function baseSeries(metric) { // массив [pos*keys] на базовом шаге
+  if (DS.data[metric]) return DS.data[metric];
+  const d = DS.derived.find(x => x.name === metric);
+  if (!d) return null;
+  if (d._cache) return d._cache;
+  const f = compileFormula(d.formula, DS.metrics.map(m => m.name).concat(DS.derived.filter(x => x !== d).map(x => x.name)));
+  const srcs = f.vars.map(baseSeries);
+  const n = DS.positions.length * DS.keys.length;
+  const out = new Array(n);
+  for (let j = 0; j < n; j++) { const v = srcs.map(s => s[j]); out[j] = v.every(isNum) ? f.fn(v) : NaN; if (!isNum(out[j])) out[j] = NaN; }
+  return d._cache = out;
+}
+// Агрегация до шага g: {keys, labels, vals[pos][t], months[t] (сколько базовых периодов вошло), full[t]}
+function agg(metric, g) {
+  if (GORD[g] < GORD[DS.base]) g = DS.base;
+  const ck = metric + "|" + g;
+  if (CACHE.has(ck)) return CACHE.get(ck);
+  const src = baseSeries(metric), info = metricInfo(metric);
+  const K = DS.keys, nK = K.length, nP = DS.positions.length;
+  const gk = []; const map = new Array(nK);
+  for (let t = 0; t < nK; t++) { const k = gKey(K[t], g); if (!gk.length || gk[gk.length - 1] !== k) gk.push(k); map[t] = gk.length - 1; }
+  const per = Math.round(GSTEP[g] / GSTEP[DS.base]);
+  const counts = new Array(gk.length).fill(0); for (let t = 0; t < nK; t++) counts[map[t]]++;
+  const vals = [];
+  for (let p = 0; p < nP; p++) {
+    const s = new Array(gk.length).fill(0), c = new Array(gk.length).fill(0);
+    for (let t = 0; t < nK; t++) { const v = src[p * nK + t]; if (isNum(v)) { s[map[t]] += v; c[map[t]]++; } }
+    vals.push(s.map((x, i) => c[i] ? (info.agg === "avg" ? x / c[i] : x) : NaN));
+  }
+  const res = { g, keys: gk, labels: gk.map(k => pLabel(k, g)), vals, full: counts.map(c => c >= per), counts, per, agg: info.agg };
+  CACHE.set(ck, res);
+  return res;
+}
+function clearCache() { CACHE.clear(); if (DS) DS.derived.forEach(d => d._cache = null); }
+
+/* ---------------------------- состояние ---------------------------- */
+const S = {
+  view: "overview", metric: null, g: "M", t: -1, cmp: "yoy", customT: -1, group: "", detailPos: 0,
+  tableSort: { col: "cur", dir: -1 }, tableSearch: "", tableMode: "flat", heatMode: "mom", heatSort: "total", heatNums: true,
+  factor: { formula: "", method: "shapley" }, fcH: 12, scen: {}, demo: true
+};
+function visiblePos() { const out = []; DS.positions.forEach((p, i) => { if (!S.group || p.group === S.group) out.push(i); }); return out; }
+function groups() { return Array.from(new Set(DS.positions.map(p => p.group).filter(Boolean))).sort((a, b) => a.localeCompare(b, "ru")); }
+function totalSeries(A, P = visiblePos()) {
+  return A.keys.map((_, t) => { const v = P.map(p => A.vals[p][t]); return A.agg === "avg" ? mean(v) : sum(v); });
+}
+// Пара сравнения: значения по позициям в периоде B (текущий) и A (база)
+function comparePair(metric = S.metric) {
+  const A = agg(metric, S.g); const n = A.keys.length;
+  const t = S.t < 0 || S.t >= n ? n - 1 : S.t;
+  const P = DS.positions.length;
+  const col = i => Array.from({ length: P }, (_, p) => A.vals[p][i]);
+  const k = A.keys[t];
+  let res;
+  if (S.cmp === "prev") {
+    res = { a: t - 1 >= 0 ? col(t - 1) : null, b: col(t), la: t - 1 >= 0 ? A.labels[t - 1] : "—", lb: A.labels[t], ta: t - 1 };
+  } else if (S.cmp === "yoy") {
+    const ta = A.keys.indexOf(k - 12);
+    res = { a: ta >= 0 ? col(ta) : null, b: col(t), la: ta >= 0 ? A.labels[ta] : pLabel(k - 12, A.g), lb: A.labels[t], ta };
+  } else if (S.cmp === "ytd") {
+    const y = yearOf(k);
+    const span = A.keys.map((kk, i) => i).filter(i => yearOf(A.keys[i]) === y && A.keys[i] <= k);
+    const spanA = A.keys.map((kk, i) => i).filter(i => yearOf(A.keys[i]) === y - 1 && A.keys[i] <= k - 12);
+    const red = idx => Array.from({ length: P }, (_, p) => { const v = idx.map(i => A.vals[p][i]); return A.agg === "avg" ? mean(v) : sum(v); });
+    const lbl = (yy, last) => A.g === "Y" ? String(yy) : `${A.g === "M" ? "янв" : "I кв"}–${pLabel(last, A.g).replace(" " + yy, "")} ${yy}`;
+    res = { a: spanA.length && spanA.length === span.length ? red(spanA) : null, b: red(span), la: lbl(y - 1, k - 12), lb: lbl(y, k), ta: -2, ytd: true };
+  } else {
+    const ta = Math.min(Math.max(S.customT, 0), n - 1);
+    res = { a: col(ta), b: col(t), la: A.labels[ta], lb: A.labels[t], ta };
+  }
+  res.t = t; res.A = A;
+  res.partial = !A.full[t] || (res.ta >= 0 && !A.full[res.ta]);
+  return res;
+}
+const CMP_TXT = { prev: "к предыдущему периоду", yoy: "к тому же периоду год назад", ytd: "с начала года к тому же отрезку прошлого года", custom: "к выбранному периоду" };
+
+/* ---------------------------- графики (SVG) ---------------------------- */
+const SVGNS = "http://www.w3.org/2000/svg";
+const SERIES = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7", "--s8"];
+const scol = i => `var(${SERIES[i % SERIES.length]})`;
+function niceTicks(min, max, count = 5) {
+  if (!isNum(min) || !isNum(max)) return [0, 1];
+  if (min === max) { const d = Math.abs(min) || 1; min -= d * 0.5; max += d * 0.5; }
+  const span = max - min, step0 = span / count, mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const err = step0 / mag; const step = (err >= 7.5 ? 10 : err >= 3.5 ? 5 : err >= 1.5 ? 2 : 1) * mag;
+  const lo = Math.floor(min / step) * step, hi = Math.ceil(max / step) * step;
+  const out = []; for (let v = lo; v <= hi + step * 1e-9; v += step) out.push(Math.abs(v) < step * 1e-9 ? 0 : v);
+  return out;
+}
+const MC = document.createElement("canvas").getContext("2d");
+const FONTS = { body: "system-ui, sans-serif", mono: "monospace" };
+function refreshFonts() { FONTS.body = css("--f-body") || FONTS.body; FONTS.mono = css("--f-mono") || FONTS.mono; }
+// точная ширина текста в пикселях
+function tw(s, size = 11, mono = false, weight = 400) { MC.font = `${weight} ${size}px ${mono ? FONTS.mono : FONTS.body}`; return MC.measureText(String(s)).width; }
+function fitText(s, maxW, size = 11, weight = 400) {
+  s = String(s); if (tw(s, size, false, weight) <= maxW) return s;
+  let lo = 0, hi = s.length;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (tw(s.slice(0, mid) + "…", size, false, weight) <= maxW) lo = mid; else hi = mid - 1; }
+  return s.slice(0, Math.max(1, lo)).trimEnd() + "…";
+}
+function wrapText(s, maxW, size = 11, maxLines = 3) {
+  const words = String(s).split(/\s+/); const out = []; let cur = "";
+  for (const w of words) { const cand = cur ? cur + " " + w : w; if (tw(cand, size) > maxW && cur) { out.push(cur); cur = w; } else cur = cand; }
+  if (cur) out.push(cur);
+  let lines = out.map(l => fitText(l, maxW, size));
+  if (lines.length > maxLines) { lines = lines.slice(0, maxLines); lines[maxLines - 1] = fitText(lines[maxLines - 1] + "…", maxW, size); }
+  return lines;
+}
+const tip = {
+  el: null,
+  show(html, x, y) {
+    const t = this.el || (this.el = $("#tip")); t.innerHTML = html; t.hidden = false;
+    const r = t.getBoundingClientRect(); let nx = x + 14, ny = y + 14;
+    if (nx + r.width > innerWidth - 8) nx = x - r.width - 14;
+    if (ny + r.height > innerHeight - 8) ny = y - r.height - 14;
+    t.style.left = Math.max(8, nx) + "px"; t.style.top = Math.max(8, ny) + "px";
+  },
+  hide() { if (this.el) this.el.hidden = true; }
+};
+function svgEl(w, h) { const s = document.createElementNS(SVGNS, "svg"); s.setAttribute("viewBox", `0 0 ${w} ${h}`); s.setAttribute("height", h); s.setAttribute("role", "img"); return s; }
+function add(parent, tag, attrs = {}, text) { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; parent.appendChild(e); return e; }
+
+/* Линейный график: series [{name, values, color, dash, width, band:{lo,hi}}] */
+function lineChart(host, o) {
+  host.innerHTML = ""; host.classList.add("chart");
+  const W = Math.max(280, host.clientWidth || 600), H = o.height || 260;
+  const all = []; o.series.forEach(s => { s.values.forEach(v => isNum(v) && all.push(v)); if (s.band) { s.band.lo.forEach(v => isNum(v) && all.push(v)); s.band.hi.forEach(v => isNum(v) && all.push(v)); } });
+  if (!all.length) { host.innerHTML = `<div class="empty">Нет данных для графика</div>`; return; }
+  let mn = Math.min(...all), mx = Math.max(...all);
+  if (o.zero) { mn = Math.min(0, mn); mx = Math.max(0, mx); }
+  const pad = (mx - mn) * 0.08 || Math.abs(mx) * 0.1 || 1; if (!o.zero) mn -= pad; mx += pad;
+  const ticks = niceTicks(mn, mx, H < 200 ? 3 : 5); mn = ticks[0]; mx = ticks[ticks.length - 1];
+  const yf = o.yFmt || fmtC;
+  const L = Math.max(...ticks.map(t => tw(yf(t), 10.5, true))) + 14, R = 14, T = 10, B = 26;
+  const n = o.labels.length, iw = W - L - R, ih = H - T - B;
+  const x = i => L + (n <= 1 ? iw / 2 : i * iw / (n - 1)), y = v => T + ih - (v - mn) / (mx - mn) * ih;
+  if (o.legend !== false && o.series.length > 1) {
+    const lg = document.createElement("div"); lg.className = "legend";
+    lg.innerHTML = o.series.filter(s => !s.noLegend).map(s => `<span><i class="${s.dash ? "dash" : ""}" style="background:${s.color};color:${s.color}"></i>${esc(s.name)}</span>`).join("");
+    host.appendChild(lg);
+  }
+  const svg = svgEl(W, H); host.appendChild(svg);
+  ticks.forEach(t => { add(svg, "line", { x1: L, x2: W - R, y1: y(t), y2: y(t), class: t === 0 && mn < 0 ? "zero-l" : "grid-l" }); add(svg, "text", { x: L - 8, y: y(t) + 3.5, "text-anchor": "end", class: "axis-num" }, yf(t)); });
+  const lw = Math.max(...o.labels.map(l => tw(l, 11))) + 16;
+  const every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor((iw + lw) / lw))));
+  let lastRight = -Infinity;
+  for (let i = 0; i < n; i += every) { const w = tw(o.labels[i], 11); const xx = x(i);
+    const anchor = xx + w / 2 > W ? "end" : xx - w / 2 < 0 ? "start" : "middle";
+    const left = anchor === "end" ? xx - w : anchor === "start" ? xx : xx - w / 2;
+    if (left < lastRight + 6) continue;                     // не даём подписям наезжать
+    add(svg, "text", { x: xx, y: H - 8, "text-anchor": anchor }, o.labels[i]); lastRight = left + w; }
+  if (isNum(o.markX)) add(svg, "rect", { x: x(o.markX) - Math.max(4, iw / Math.max(n - 1, 1) / 2), y: T, width: Math.max(8, iw / Math.max(n - 1, 1)), height: ih, fill: "var(--accent-soft)", opacity: 0.7 });
+  if (isNum(o.splitX)) add(svg, "line", { x1: x(o.splitX), x2: x(o.splitX), y1: T, y2: T + ih, stroke: "var(--fg-3)", "stroke-dasharray": "3 3" });
+  for (const s of o.series) {
+    if (s.band) {
+      let d = "", first = true; const idx = s.band.lo.map((v, i) => i).filter(i => isNum(s.band.lo[i]) && isNum(s.band.hi[i]));
+      if (idx.length) { d = idx.map((i, k) => (k ? "L" : "M") + x(i) + "," + y(s.band.hi[i])).join("") + idx.slice().reverse().map(i => "L" + x(i) + "," + y(s.band.lo[i])).join("") + "Z"; add(svg, "path", { d, fill: s.color, opacity: 0.14 }); }
+    }
+    if (s.area) {
+      const idx = s.values.map((v, i) => i).filter(i => isNum(s.values[i]));
+      if (idx.length > 1) add(svg, "path", { d: idx.map((i, k) => (k ? "L" : "M") + x(i) + "," + y(s.values[i])).join("") + `L${x(idx[idx.length - 1])},${T + ih}L${x(idx[0])},${T + ih}Z`, fill: s.color, opacity: 0.09 });
+    }
+    let d = "", pen = false;
+    s.values.forEach((v, i) => { if (isNum(v)) { d += (pen ? "L" : "M") + x(i).toFixed(1) + "," + y(v).toFixed(1); pen = true; } else pen = false; });
+    add(svg, "path", { d, fill: "none", stroke: s.color, "stroke-width": s.width || 2, "stroke-dasharray": s.dash ? "5 4" : "none", "stroke-linejoin": "round", "stroke-linecap": "round" });
+    const lastI = s.values.map((v, i) => i).filter(i => isNum(s.values[i])).pop();
+    if (s.endDot !== false && lastI != null) add(svg, "circle", { cx: x(lastI), cy: y(s.values[lastI]), r: 3.5, fill: s.color, stroke: "var(--surface)", "stroke-width": 2 });
+  }
+  // слой наведения
+  const g = add(svg, "g", {}); const vl = add(g, "line", { y1: T, y2: T + ih, stroke: "var(--fg-3)", "stroke-width": 1, opacity: 0 });
+  const dots = o.series.map(s => add(g, "circle", { r: 4, fill: s.color, stroke: "var(--surface)", "stroke-width": 2, opacity: 0 }));
+  const hit = add(svg, "rect", { x: L, y: T, width: iw, height: ih, fill: "transparent", style: o.onClick ? "cursor:pointer" : "" });
+  const idxAt = ev => { const r = svg.getBoundingClientRect(); const px = (ev.clientX - r.left) * W / r.width; return Math.max(0, Math.min(n - 1, Math.round((px - L) / (iw / Math.max(n - 1, 1))))); };
+  hit.addEventListener("mousemove", ev => {
+    const i = idxAt(ev); vl.setAttribute("x1", x(i)); vl.setAttribute("x2", x(i)); vl.setAttribute("opacity", 0.6);
+    let rows = "";
+    o.series.forEach((s, k) => { const v = s.values[i]; if (isNum(v)) { dots[k].setAttribute("cx", x(i)); dots[k].setAttribute("cy", y(v)); dots[k].setAttribute("opacity", 1); rows += `<div class="t-r"><span><span class="sw" style="background:${s.color}"></span>${esc(s.name)}</span><b>${(s.fmt || fmt)(v)}</b></div>`; } else dots[k].setAttribute("opacity", 0);
+      if (s.band && isNum(s.band.lo[i])) rows += `<div class="t-r"><span>интервал 80%</span><b>${fmtC(s.band.lo[i])} … ${fmtC(s.band.hi[i])}</b></div>`; });
+    tip.show(`<div class="t-h">${esc(o.tipLabels ? o.tipLabels[i] : o.labels[i])}</div>${rows || '<span class="muted">нет данных</span>'}${o.tipExtra ? o.tipExtra(i) : ""}`, ev.clientX, ev.clientY);
+  });
+  hit.addEventListener("mouseleave", () => { vl.setAttribute("opacity", 0); dots.forEach(d => d.setAttribute("opacity", 0)); tip.hide(); });
+  if (o.onClick) hit.addEventListener("click", ev => o.onClick(idxAt(ev)));
+}
+
+/* Горизонтальные столбики (лидеры роста/падения) */
+function hbarChart(host, items, o = {}) {
+  host.innerHTML = ""; host.classList.add("chart");
+  if (!items.length) { host.innerHTML = `<div class="empty">${o.empty || "Нет изменений"}</div>`; return; }
+  const W = Math.max(280, host.clientWidth || 500), rowH = 26, H = items.length * rowH + 22;
+  const maxAbs = Math.max(...items.map(d => Math.abs(d.v))) || 1;
+  const vf = o.fmt || fmtS;
+  const nameW = Math.min(Math.max(...items.map(d => tw(d.name, 11, false, 500))) + 6, W * 0.36);
+  const valW = Math.max(...items.map(d => tw(vf(d.v), 10.5, true))) + 10;
+  const hasN = items.some(d => d.v < 0), hasP = items.some(d => d.v > 0);
+  const L = nameW + 10 + (hasN ? valW : 0), R = hasP ? valW : 6, iw = Math.max(40, W - L - R);
+  const negMax = Math.max(0, ...items.map(d => -d.v)), posMax = Math.max(0, ...items.map(d => d.v));
+  const zx = L + iw * negMax / ((negMax + posMax) || 1);
+  const sc = iw / ((negMax + posMax) || 1);
+  const svg = svgEl(W, H); host.appendChild(svg);
+  add(svg, "line", { x1: zx, x2: zx, y1: 2, y2: H - 18, class: "zero-l" });
+  items.forEach((d, i) => {
+    const yy = 4 + i * rowH, w = Math.max(2, Math.abs(d.v) * sc);
+    const xx = d.v >= 0 ? zx : zx - w;
+    const name = fitText(d.name, nameW, 11, 500);
+    add(svg, "text", { x: nameW, y: yy + 14, "text-anchor": "end", class: "lbl-strong", style: "font-weight:500" }, name);
+    add(svg, "rect", { x: xx, y: yy + 3, width: w, height: rowH - 9, rx: 3, fill: d.v >= 0 ? "var(--up)" : "var(--down)" });
+    const tx = d.v >= 0 ? xx + w + 5 : xx - 5;
+    add(svg, "text", { x: tx, y: yy + 14, "text-anchor": d.v >= 0 ? "start" : "end", class: "axis-num" }, vf(d.v));
+    const hit = add(svg, "rect", { x: 0, y: yy, width: W, height: rowH, fill: "transparent", style: o.onClick ? "cursor:pointer" : "" });
+    hit.addEventListener("mousemove", ev => tip.show(`<div class="t-h">${esc(d.name)}</div>${d.tip || ""}`, ev.clientX, ev.clientY));
+    hit.addEventListener("mouseleave", () => tip.hide());
+    if (o.onClick) hit.addEventListener("click", () => o.onClick(d));
+  });
+}
+
+/* Каскадная диаграмма: steps [{name, v, total?:true}] */
+function waterfall(host, steps, o = {}) {
+  host.innerHTML = ""; host.classList.add("chart");
+  const W = Math.max(300, host.clientWidth || 600), H = o.height || 300;
+  const n = steps.length; let run = 0; const bars = [];
+  for (const s of steps) { if (s.total) { bars.push({ ...s, y0: 0, y1: s.v }); run = s.v; } else { bars.push({ ...s, y0: run, y1: run + s.v }); run += s.v; } }
+  const vals = bars.flatMap(b => b.total ? [b.y1] : [b.y0, b.y1]);
+  let mn = Math.min(...vals), mx = Math.max(...vals);
+  const span = mx - mn || Math.abs(mx) || 1;
+  const fromZero = !(mn > 0 && span < 0.35 * mx) && !(mx < 0 && span < 0.35 * -mn);
+  if (fromZero) { mn = Math.min(0, mn); mx = Math.max(0, mx); } else { mn -= span * 0.25; mx += span * 0.1; }
+  const ticks = niceTicks(mn, mx, 5); mn = ticks[0]; mx = ticks[ticks.length - 1];
+  const L = Math.max(...ticks.map(t => tw(fmtC(t), 10.5, true))) + 14, R = 8, T = 18;
+  const slot = (W - L - R) / n;
+  const lblW = Math.max(30, slot - 6), lblSize = slot < 64 ? 10 : 11;
+  const lines = steps.map(s => wrapText(s.name, lblW, lblSize, 3)); const B = 14 + (lblSize + 2) * Math.max(...lines.map(l => l.length));
+  const ih = H - T - B; const y = v => T + ih - (v - mn) / (mx - mn) * ih;
+  const svg = svgEl(W, H); host.appendChild(svg);
+  ticks.forEach(t => { add(svg, "line", { x1: L, x2: W - R, y1: y(t), y2: y(t), class: t === 0 ? "zero-l" : "grid-l" }); add(svg, "text", { x: L - 8, y: y(t) + 3.5, "text-anchor": "end", class: "axis-num" }, fmtC(t)); });
+  if (!fromZero) add(svg, "text", { x: W - R, y: 10, "text-anchor": "end", style: "font-size:10px" }, "шкала не от нуля");
+  const bw = Math.min(56, slot * 0.62);
+  bars.forEach((b, i) => {
+    const cx = L + slot * (i + 0.5);
+    const top = y(Math.max(b.y0, b.y1)), bot = b.total && !fromZero ? T + ih : y(Math.min(b.y0, b.y1));
+    const col = b.total ? "var(--total)" : b.v >= 0 ? "var(--up)" : "var(--down)";
+    add(svg, "rect", { x: cx - bw / 2, y: top, width: bw, height: Math.max(1.5, bot - top), rx: 3, fill: col });
+    if (i < n - 1) add(svg, "line", { x1: cx + bw / 2, x2: cx + slot - bw / 2, y1: y(b.y1), y2: y(b.y1), stroke: "var(--fg-3)", "stroke-dasharray": "2 3" });
+    const valTxt = b.total ? fmtC(b.v) : fmtS(b.v);
+    const vs = tw(valTxt, 10.5, true) <= slot - 2 ? 10.5 : tw(valTxt, 9, true) <= slot - 2 ? 9 : 0;
+    if (vs) add(svg, "text", { x: cx, y: top - 5, "text-anchor": "middle", class: "axis-num" + (b.total ? " lbl-strong" : ""), style: `font-size:${vs}px` }, valTxt);
+    lines[i].forEach((ln, k) => add(svg, "text", { x: cx, y: T + ih + 15 + k * (lblSize + 2), "text-anchor": "middle", class: b.total ? "lbl-strong" : "", style: `font-size:${lblSize}px` }, ln));
+    const hit = add(svg, "rect", { x: cx - slot / 2, y: T, width: slot, height: ih, fill: "transparent" });
+    hit.addEventListener("mousemove", ev => tip.show(`<div class="t-h">${esc(b.name)}</div><div class="t-r"><span>${b.total ? "Значение" : "Влияние"}</span><b>${b.total ? fmt(b.v) : (b.v > 0 ? "+" : "") + fmt(b.v)}</b></div>${b.tip || ""}`, ev.clientX, ev.clientY));
+    hit.addEventListener("mouseleave", () => tip.hide());
+  });
+}
+function sparkline(vals, o = {}) {
+  const W = o.w || 110, H = o.h || 28, idx = vals.map((v, i) => i).filter(i => isNum(vals[i]));
+  if (idx.length < 2) return `<svg width="${W}" height="${H}"></svg>`;
+  const v = idx.map(i => vals[i]); const mn = Math.min(...v), mx = Math.max(...v), sp = mx - mn || 1;
+  const x = i => 2 + i * (W - 6) / (vals.length - 1), y = val => H - 3 - (val - mn) / sp * (H - 6);
+  const d = idx.map((i, k) => (k ? "L" : "M") + x(i).toFixed(1) + "," + y(vals[i]).toFixed(1)).join("");
+  const last = idx[idx.length - 1], prev = idx[idx.length - 2];
+  const col = o.color || (vals[last] >= vals[prev] ? "var(--up)" : "var(--down)");
+  return `<svg width="${o.fluid ? "100%" : W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+    <path d="${d}L${x(last)},${H}L${x(idx[0])},${H}Z" fill="${col}" opacity=".1"></path>
+    <path d="${d}" fill="none" stroke="${col}" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>
+    <circle cx="${x(last)}" cy="${y(vals[last])}" r="2.4" fill="${col}"></circle></svg>`;
+}
+function svgToPng(svg, name) {
+  const clone = svg.cloneNode(true);
+  const srcEls = [svg, ...svg.querySelectorAll("*")], dstEls = [clone, ...clone.querySelectorAll("*")];
+  srcEls.forEach((s, i) => { const cs = getComputedStyle(s); const d = dstEls[i];
+    ["fill", "stroke", "opacity", "font-family", "font-size", "font-weight"].forEach(p => d.style.setProperty(p, cs.getPropertyValue(p))); });
+  const vb = svg.viewBox.baseVal, scale = 2;
+  clone.setAttribute("width", vb.width); clone.setAttribute("height", vb.height); clone.setAttribute("xmlns", SVGNS);
+  const img = new Image();
+  img.onload = () => {
+    const c = document.createElement("canvas"); c.width = vb.width * scale; c.height = vb.height * scale;
+    const ctx = c.getContext("2d"); ctx.fillStyle = css("--surface"); ctx.fillRect(0, 0, c.width, c.height); ctx.scale(scale, scale); ctx.drawImage(img, 0, 0);
+    c.toBlob(b => download(b, name + ".png"));
+  };
+  img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(clone));
+}
+function download(blob, name) {
+  if (window.top !== window.self) { toast("В веб-версии сохранение файлов отключено браузером. Нажмите «Копировать» или откройте FiberPulse.html на компьютере.", 5000); return; }
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  toast("Файл «" + name + "» сохранён в «Загрузки»");
+}
+function copyText(text) {
+  const done = () => toast("Скопировано — вставьте в Excel (Ctrl+V)");
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
+  function fallback() { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); done(); } catch (e) { toast("Не удалось скопировать"); } ta.remove(); }
+}
+
+/* ---------------------------- аналитика ---------------------------- */
+// Вклад позиций в изменение итога + разбивка «рост/падение/новые/выбывшие»
+function movers(pair, P = visiblePos()) {
+  const out = [];
+  for (const p of P) {
+    const a = pair.a ? pair.a[p] : NaN, b = pair.b[p];
+    if (!isNum(a) && !isNum(b)) continue;
+    const st = !isNum(a) ? "new" : !isNum(b) ? "gone" : "both";
+    const d = (isNum(b) ? b : 0) - (isNum(a) ? a : 0);
+    out.push({ p, name: DS.positions[p].name, a, b, d, pct: st === "both" ? pctCh(b, a) : NaN, st });
+  }
+  return out;
+}
+function zScoreLatest(series, t) { // аномалия: изменение последнего периода против истории изменений
+  const ch = []; for (let i = 1; i <= t; i++) { const c = pctCh(series[i], series[i - 1]); if (isNum(c)) ch.push(c); }
+  if (ch.length < 8) return NaN;
+  const last = ch[ch.length - 1], hist = ch.slice(0, -1); const m = mean(hist), sd = Math.sqrt(mean(hist.map(v => (v - m) ** 2)));
+  return sd > 0 ? (last - m) / sd : NaN;
+}
+function insights(pair, mv, tot) {
+  const L = [];
+  const A = pair.A, info = metricInfo(S.metric);
+  const ta = pair.a ? (A.agg === "avg" ? mean(visiblePos().map(p => pair.a[p])) : sum(visiblePos().map(p => pair.a[p]))) : NaN;
+  const tb = A.agg === "avg" ? mean(visiblePos().map(p => pair.b[p])) : sum(visiblePos().map(p => pair.b[p]));
+  if (isNum(ta)) {
+    const p = pctCh(tb, ta);
+    L.push({ k: p >= 0 ? "up" : "down", ico: p >= 0 ? "▲" : "▼", html: `${info.agg === "avg" ? "Среднее" : "Итого"} за <b>${esc(pair.lb)}</b>: ${fmtC(tb)} — ${p >= 0 ? "рост" : "снижение"} на <b>${fmtP(p)}</b> (${fmtS(tb - ta)}) ${pair.ytd ? "к тому же отрезку прошлого года" : "к " + esc(pair.la)}.` });
+  } else L.push({ k: "info", ico: "i", html: `Для «${esc(pair.la)}» нет данных — сравнивать не с чем. Выберите другой режим сравнения.` });
+  const both = mv.filter(m => m.st === "both");
+  const up = both.filter(m => m.d > 0).sort((a, b) => b.d - a.d), dn = both.filter(m => m.d < 0).sort((a, b) => a.d - b.d);
+  if (up.length) L.push({ k: "up", ico: "↑", html: `Больше всего прибавили: ${up.slice(0, 3).map(m => `<b>${esc(m.name)}</b> (${fmtS(m.d)}, ${fmtP(m.pct)})`).join(", ")}.` });
+  if (dn.length) L.push({ k: "down", ico: "↓", html: `Сильнее всего просели: ${dn.slice(0, 3).map(m => `<b>${esc(m.name)}</b> (${fmtS(m.d)}, ${fmtP(m.pct)})`).join(", ")}.` });
+  if (isNum(ta) && info.agg === "sum" && Math.abs(tb - ta) > 0) {
+    const dTot = tb - ta; const sorted = mv.slice().sort((a, b) => Math.sign(dTot) * (b.d - a.d));
+    let acc = 0, k = 0; for (const m of sorted) { acc += m.d; k++; if (Math.abs(acc) >= Math.abs(dTot) * 0.8 || k >= sorted.length) break; }
+    if (k <= Math.max(3, mv.length * 0.3) && mv.length > 4) L.push({ k: "info", ico: "%", html: `Изменение сконцентрировано: <b>${k}</b> из ${mv.length} позиций дают 80% итогового ${dTot > 0 ? "прироста" : "снижения"}.` });
+  }
+  const nw = mv.filter(m => m.st === "new"), gone = mv.filter(m => m.st === "gone");
+  if (nw.length) L.push({ k: "info", ico: "+", html: `Новые позиции (не было в «${esc(pair.la)}»): ${nw.slice(0, 4).map(m => `<b>${esc(m.name)}</b>`).join(", ")}${nw.length > 4 ? ` и ещё ${nw.length - 4}` : ""}.` });
+  if (gone.length) L.push({ k: "warn", ico: "−", html: `Выбыли (нет данных в «${esc(pair.lb)}»): ${gone.slice(0, 4).map(m => `<b>${esc(m.name)}</b>`).join(", ")}${gone.length > 4 ? ` и ещё ${gone.length - 4}` : ""}.` });
+  if (S.g !== "Y") {
+    const an = visiblePos().map(p => ({ p, z: zScoreLatest(A.vals[p], pair.t) })).filter(x => isNum(x.z) && Math.abs(x.z) >= 2.5).sort((a, b) => Math.abs(b.z) - Math.abs(a.z));
+    if (an.length) L.push({ k: "warn", ico: "!", html: `Необычное изменение к прошлому ${GNAME[S.g]}у: ${an.slice(0, 3).map(x => `<b>${esc(DS.positions[x.p].name)}</b> (${x.z > 0 ? "выше" : "ниже"} нормы в ${nf(1).format(Math.abs(x.z))} раза по разбросу)`).join(", ")}. Проверьте данные или причину.` });
+  }
+  if (pair.partial) L.push({ k: "warn", ico: "!", html: `В сравнении участвует неполный ${GNAME[S.g]} — данные есть не за все месяцы. Сравнение может быть искажено.` });
+  return L;
+}
+
+/* --- факторный анализ --- */
+function factorDecompose(f, xa, xb, method) {
+  const k = f.vars.length, F = v => f.fn(v);
+  const ya = F(xa), yb = F(xb);
+  if (!isNum(ya) || !isNum(yb)) return null;
+  const eff = new Array(k).fill(0);
+  if (method === "chain") {
+    let cur = xa.slice(), prev = ya;
+    for (let i = 0; i < k; i++) { cur[i] = xb[i]; const y = F(cur); eff[i] = y - prev; prev = y; }
+  } else if (method === "integral") {
+    const nodes = [-0.9815606342, -0.9041172564, -0.7699026742, -0.5873179543, -0.3678314990, -0.1252334085, 0.1252334085, 0.3678314990, 0.5873179543, 0.7699026742, 0.9041172564, 0.9815606342];
+    const wts = [0.0471753364, 0.1069393260, 0.1600783285, 0.2031674267, 0.2334925365, 0.2491470458, 0.2491470458, 0.2334925365, 0.2031674267, 0.1600783285, 0.1069393260, 0.0471753364];
+    for (let q = 0; q < nodes.length; q++) {
+      const t = (nodes[q] + 1) / 2, w = wts[q] / 2;
+      const x = xa.map((v, i) => v + t * (xb[i] - v));
+      for (let i = 0; i < k; i++) {
+        const h = 1e-6 * Math.max(Math.abs(x[i]), 1); const xp = x.slice(), xm = x.slice(); xp[i] += h; xm[i] -= h;
+        const g = (F(xp) - F(xm)) / (2 * h); eff[i] += w * g * (xb[i] - xa[i]);
+      }
+    }
+    const s = eff.reduce((a, b) => a + b, 0);
+    if (!isNum(s) || Math.abs(s - (yb - ya)) > 1e-6 * Math.max(Math.abs(yb - ya), Math.abs(ya), 1)) return factorDecompose(f, xa, xb, "shapley");
+  } else { // Шепли: среднее по всем порядкам подстановки
+    const n = 1 << k, vals = new Array(n);
+    for (let m = 0; m < n; m++) vals[m] = F(xa.map((v, i) => (m >> i) & 1 ? xb[i] : v));
+    const fact = [1]; for (let i = 1; i <= k; i++) fact[i] = fact[i - 1] * i;
+    for (let i = 0; i < k; i++) for (let m = 0; m < n; m++) if (!((m >> i) & 1)) {
+      let s = 0; for (let j = 0; j < k; j++) if ((m >> j) & 1) s++;
+      eff[i] += fact[s] * fact[k - s - 1] / fact[k] * (vals[m | (1 << i)] - vals[m]);
+    }
+  }
+  return { ya, yb, eff };
+}
+function suggestFormulas() {
+  const names = DS.metrics.map(m => m.name), out = [];
+  const sample = name => DS.data[name];
+  for (const y of names) for (let i = 0; i < names.length; i++) for (let j = 0; j < names.length; j++) {
+    const a = names[i], b = names[j]; if (a === y || b === y || a === b) continue;
+    const Y = sample(y), X1 = sample(a), X2 = sample(b);
+    for (const [op, fn] of [["*", (p, q) => p * q], ["/", (p, q) => p / q]]) {
+      if (op === "*" && i > j) continue;
+      let ok = 0, n = 0;
+      for (let t = 0; t < Y.length; t += Math.max(1, Math.floor(Y.length / 400))) { if (isNum(Y[t]) && isNum(X1[t]) && isNum(X2[t]) && Y[t] !== 0) { n++; if (Math.abs(fn(X1[t], X2[t]) - Y[t]) / Math.abs(Y[t]) < 0.02) ok++; } }
+      if (n >= 5 && ok / n > 0.9) out.push({ y, text: `[${a}] ${op === "*" ? "×" : "÷"} [${b}]` });
+    }
+  }
+  const main = /выручк|продаж|оборот|revenue|sales|затрат|расход|cost|сумм|доход|прибыл/i;
+  out.sort((a, b) => (b.text.includes("×") - a.text.includes("×")) || (main.test(b.y) - main.test(a.y)));
+  return out;
+}
+
+/* --- прогноз: сезонность + тренд (или Холт с затуханием) --- */
+function forecastSeries(y, h, season) {
+  const first = y.findIndex(isNum); if (first < 0) return null;
+  if (!isNum(y[y.length - 1])) return null;               // позиция выбыла — не прогнозируем
+  const s = y.slice(first); const n = s.length;
+  if (n < 4) return null;
+  for (let i = 1; i < n; i++) if (!isNum(s[i])) s[i] = s[i - 1];   // пропуски внутри ряда — последним значением
+  const lin = (arr) => { const m = arr.length, mx = (m - 1) / 2, my = mean(arr); let sxy = 0, sxx = 0; arr.forEach((v, i) => { sxy += (i - mx) * (v - my); sxx += (i - mx) ** 2; }); const b = sxx ? sxy / sxx : 0; return { a: my - b * mx, b }; };
+  let fit = [], fc = [], method;
+  if (season > 1 && n >= 2 * season) {
+    method = "сезонность + тренд";
+    const tr = lin(s); const mult = s.every(v => v > 0) && tr.a > 0 && tr.a + tr.b * (n - 1) > 0;
+    const idx = new Array(season).fill(0).map(() => []);
+    s.forEach((v, i) => { const t = tr.a + tr.b * i; idx[i % season].push(mult ? v / t : v - t); });
+    let si = idx.map(mean); const norm = mean(si); si = si.map(v => mult ? v / norm : v - norm);
+    const des = s.map((v, i) => mult ? v / si[i % season] : v - si[i % season]);
+    const w = Math.min(n, season * 3); const tr2 = lin(des.slice(n - w)); const off = n - w;
+    const val = i => { const t = tr2.a + tr2.b * (i - off); return mult ? t * si[i % season] : t + si[i % season]; };
+    fit = s.map((_, i) => val(i)); for (let i = n; i < n + h; i++) fc.push(val(i));
+  } else {
+    method = "тренд (Холт)";
+    const al = 0.5, be = 0.2, ph = 0.9; let lv = s[0], tr = s[1] - s[0];
+    fit.push(s[0]);
+    for (let i = 1; i < n; i++) { fit.push(lv + ph * tr); const nl = al * s[i] + (1 - al) * (lv + ph * tr); tr = be * (nl - lv) + (1 - be) * ph * tr; lv = nl; }
+    let dampSum = 0; for (let k = 1; k <= h; k++) { dampSum += ph ** k; fc.push(lv + dampSum * tr); }
+  }
+  const res = s.map((v, i) => v - fit[i]).slice(season > 1 ? Math.min(season, Math.floor(n / 3)) : 1);
+  const sd = Math.sqrt(mean(res.map(r => r * r))) || 0;
+  const lo = fc.map((v, k) => v - 1.28 * sd * Math.sqrt(1 + k * 0.25)), hi = fc.map((v, k) => v + 1.28 * sd * Math.sqrt(1 + k * 0.25));
+  return { fc, lo, hi, method, sd, first };
+}
+
+/* ---------------------------- демо-данные ---------------------------- */
+function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function demoSales() {
+  const R = rng(7); const nrm = () => { let u = 0, v = 0; while (!u) u = R(); while (!v) v = R(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const items = [
+    ["Кофе зерновой 1 кг", "Кофе", 4200, 1450, .010, [1.1, 1.05, 1, .95, .9, .85, .85, .9, 1, 1.05, 1.1, 1.25]],
+    ["Кофе молотый 250 г", "Кофе", 9800, 420, .004, null],
+    ["Капсулы, 10 шт.", "Кофе", 6100, 390, .022, null],
+    ["Чай чёрный 100 пак.", "Чай", 7300, 310, -.004, [1.2, 1.15, 1.05, .95, .85, .8, .8, .85, .95, 1.05, 1.15, 1.25]],
+    ["Чай зелёный 100 г", "Чай", 3400, 260, .006, null],
+    ["Матча 50 г", "Чай", 0, 690, .03, null, 18],
+    ["Шоколад горький 100 г", "Сладости", 12500, 145, .002, [1.1, 1.3, 1.25, 1, .9, .8, .8, .85, .95, 1, 1.1, 1.45]],
+    ["Печенье овсяное", "Сладости", 15200, 98, -.003, null],
+    ["Мармелад 200 г", "Сладости", 6900, 155, .008, null],
+    ["Вода 0,5 л", "Напитки", 31000, 45, .003, [.7, .7, .85, .95, 1.15, 1.35, 1.45, 1.4, 1.05, .85, .75, .8]],
+    ["Лимонад 1 л", "Напитки", 8800, 110, .012, [.6, .6, .8, .95, 1.2, 1.45, 1.6, 1.5, 1.05, .8, .65, .9]],
+    ["Сок апельсиновый 1 л", "Напитки", 5600, 175, -.012, null, 0, 30],
+    ["Кружка керамическая", "Посуда", 900, 590, .005, [.8, .8, .85, .85, .85, .85, .9, .95, 1, 1.1, 1.3, 1.9]],
+    ["Френч-пресс 0,6 л", "Посуда", 450, 1490, .002, [.8, .8, .9, .9, .85, .85, .9, .95, 1, 1.1, 1.3, 1.9]]
+  ];
+  const start = 2023 * 12; const N = 36; const recs = [];
+  items.forEach(([name, grp, q0, p0, growth, season, from = 0, to = N]) => {
+    let price = p0;
+    for (let t = 0; t < N; t++) {
+      if (t < from || t >= to) continue;
+      const m = t % 12; const s = season ? season[m] : 1;
+      const qBase = from ? 2600 * Math.min(1, (t - from + 1) / 6) : q0;
+      let q = qBase * s * Math.exp(growth * t + nrm() * 0.05);
+      if (name.startsWith("Шоколад") && t === 31) q *= 0.62;  // перебой поставок в августе 2025
+      if (m === 0 && t > 0) price *= 1 + 0.045 + R() * 0.05;   // ежегодная индексация цен
+      if (name.startsWith("Кофе зерновой") && t === 26) price *= 1.12;
+      const pr = Math.round(price * (1 + nrm() * 0.01));
+      const k = start + t;
+      recs.push([name, grp, "Объём, шт.", k, "M", Math.round(q)]);
+      recs.push([name, grp, "Цена, руб.", k, "M", pr]);
+      recs.push([name, grp, "Выручка, руб.", k, "M", Math.round(q) * pr]);
+    }
+  });
+  const ds = datasetFromRecords(recs, { name: "Пример: продажи кофейни-магазина, 2023–2025" });
+  ds.demo = true;
+  return ds;
+}
+function demoBudget() {
+  const R = rng(11); const lines = [
+    ["Аренда", "Постоянные", 850000, 0, 0.0], ["Зарплата офис", "Постоянные", 2400000, .006, .02], ["Зарплата склад", "Переменные", 1300000, .01, .06],
+    ["Логистика", "Переменные", 920000, .012, .12], ["Маркетинг", "Переменные", 600000, .015, .25], ["IT и связь", "Постоянные", 310000, .008, .05],
+    ["Коммунальные", "Постоянные", 180000, .004, .2], ["Упаковка", "Переменные", 260000, .01, .1], ["Обучение", "Прочие", 90000, .0, .5], ["Представительские", "Прочие", 70000, .0, .45]
+  ];
+  const recs = [];
+  lines.forEach(([n, g, base, gr, vol], li) => { for (let t = 0; t < 30; t++) { const m = t % 12; const s = n === "Коммунальные" ? [1.4, 1.35, 1.2, 1, .8, .7, .7, .7, .8, 1, 1.2, 1.4][m] : n === "Маркетинг" ? [.7, .8, 1, 1, 1, .8, .7, .8, 1.1, 1.2, 1.4, 1.5][m] : 1;
+    const v = base * s * Math.exp(gr * t) * (1 + (R() - .5) * vol) * (m === 0 && /Зарплата/.test(n) ? 1 : 1) * (t >= 12 && /Зарплата/.test(n) ? 1.08 : 1) * (t >= 24 && /Зарплата/.test(n) ? 1.07 : 1);
+    recs.push([n, g, "Затраты, руб.", 2024 * 12 + t, "M", Math.round(v / 100) * 100]); } });
+  const ds = datasetFromRecords(recs, { name: "Пример: бюджет затрат по статьям, 2024–2026" }); ds.demo = true; return ds;
+}
+
+/* ---------------------------- сохранение ---------------------------- */
+function saveDS() {
+  if (!DS) return;
+  const pack = { ...DS, derived: DS.derived.map(d => ({ name: d.name, formula: d.formula, agg: d.agg })) };
+  const ok = store.set("ds", pack);
+  if (!ok && !DS.demo) toast("Данные слишком большие для автосохранения — при следующем открытии загрузите файл снова.", 4000);
+}
+function saveState() { store.set("state", { view: S.view, metric: S.metric, g: S.g, cmp: S.cmp, group: S.group, factor: S.factor, fcH: S.fcH, heatMode: S.heatMode, tableMode: S.tableMode }); }
+function setDS(ds, keepState) {
+  DS = ds; clearCache();
+  DS.derived = (DS.derived || []).map(d => ({ ...d, _cache: null }));
+  if (!keepState || !allMetricNames().includes(S.metric)) {
+    const names = allMetricNames();
+    S.metric = names.find(n => /выручк|продаж|revenue|sales|затрат|расход|сумм|оборот|доход/i.test(n)) || names[0];
+  }
+  if (GORD[S.g] < GORD[DS.base]) S.g = DS.base;
+  S.t = -1; S.group = keepState && groups().includes(S.group) ? S.group : ""; S.detailPos = 0;
+  if (!keepState) { const sg = suggestFormulas(); S.factor.formula = sg.length ? sg[0].text : ""; S.scen = {}; }
+  const nYears = new Set(DS.keys.map(yearOf)).size;
+  if (S.cmp === "yoy" && nYears < 2) S.cmp = "prev";
+  saveDS(); render();
+}
+
+/* ---------------------------- интерфейс ---------------------------- */
+const VIEWS = {};
+function render() {
+  if (!DS) return;
+  renderToolbar();
+  $$(".nav-btn").forEach(b => b.setAttribute("aria-current", b.dataset.view === S.view ? "page" : "false"));
+  const c = $("#content"); c.innerHTML = "";
+  if (DS.demo && S.view !== "data") {
+    const b = document.createElement("div"); b.className = "banner";
+    b.innerHTML = `<span>Сейчас открыт <b>пример</b>: ${esc(DS.name.replace(/^Пример:\s*/, ""))}. Цифры выдуманы.</span><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary sm" data-go="data">Загрузить свою таблицу</button><button class="btn sm" id="demo-switch">Другой пример</button></span>`;
+    c.appendChild(b);
+    $("#demo-switch", b).onclick = () => setDS(/бюджет/i.test(DS.name) ? demoSales() : demoBudget());
+  }
+  VIEWS[S.view](c);
+  $$("[data-go]", c).forEach(b => b.onclick = () => go(b.dataset.go));
+  $("#ds-info").innerHTML = `${esc(DS.name)}<br>${DS.positions.length} поз. · ${DS.metrics.length + DS.derived.length} показ. · ${pLabel(DS.keys[0], DS.base)} — ${pLabel(DS.keys[DS.keys.length - 1], DS.base)}`;
+  saveState();
+}
+function go(view) { S.view = view; render(); window.scrollTo({ top: 0 }); }
+function renderToolbar() {
+  const ms = $("#tb-metric"); ms.innerHTML = allMetricNames().map(n => `<option ${n === S.metric ? "selected" : ""}>${esc(n)}</option>`).join("");
+  $$("#tb-gran button").forEach(b => { b.setAttribute("aria-pressed", b.dataset.g === S.g); b.disabled = GORD[b.dataset.g] < GORD[DS.base]; b.title = b.disabled ? "В данных нет такой детализации" : ""; b.style.opacity = b.disabled ? .4 : 1; });
+  const A = agg(S.metric, S.g); const n = A.keys.length; if (S.t < 0 || S.t >= n) S.t = n - 1;
+  $("#tb-period").innerHTML = A.labels.map((l, i) => `<option value="${i}" ${i === S.t ? "selected" : ""}>${l}${A.full[i] ? "" : " (неполн.)"}</option>`).join("");
+  $$("#tb-cmp button").forEach(b => b.setAttribute("aria-pressed", b.dataset.c === S.cmp));
+  const cu = $("#tb-custom"); cu.hidden = S.cmp !== "custom";
+  if (S.cmp === "custom") { if (S.customT < 0 || S.customT >= n) S.customT = Math.max(0, S.t - 1); cu.innerHTML = A.labels.map((l, i) => `<option value="${i}" ${i === S.customT ? "selected" : ""}>${l}</option>`).join(""); }
+  const gs = groups(); const gsel = $("#tb-group"); gsel.parentElement.hidden = !gs.length;
+  gsel.innerHTML = `<option value="">Все группы</option>` + gs.map(g => `<option ${g === S.group ? "selected" : ""}>${esc(g)}</option>`).join("");
+  $("#toolbar").hidden = S.view === "data";
+}
+function cardHTML(id, title, sub, tools = "", body = "") {
+  return `<section class="card" id="${id}"><div class="card-h"><div><h3 class="card-t">${title}</h3>${sub ? `<p class="card-s">${sub}</p>` : ""}</div><div class="card-tools">${tools}</div></div><div class="card-b">${body}</div></section>`;
+}
+const pngBtn = id => `<button class="btn ghost sm" data-png="${id}" title="Сохранить график картинкой"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 19h16"/></svg>PNG</button>`;
+function bindPng(root) { $$("[data-png]", root).forEach(b => b.onclick = () => { const svg = $("#" + b.dataset.png + " svg:last-of-type") || $("#" + b.dataset.png + " svg"); if (svg) svgToPng(svg, b.dataset.png); }); }
+function pageHead(title, sub, tools = "") { return `<div class="page-head"><div><h1 class="page-title">${title}</h1>${sub ? `<p class="page-sub">${sub}</p>` : ""}</div><div class="card-tools">${tools}</div></div>`; }
+
+/* ---------- Обзор ---------- */
+VIEWS.overview = c => {
+  const pair = comparePair(); const A = pair.A; const P = visiblePos();
+  const tot = totalSeries(A, P); const info = metricInfo(S.metric);
+  const t = pair.t;
+  const curTot = A.agg === "avg" ? mean(P.map(p => pair.b[p])) : sum(P.map(p => pair.b[p]));
+  const baseTot = pair.a ? (A.agg === "avg" ? mean(P.map(p => pair.a[p])) : sum(P.map(p => pair.a[p]))) : NaN;
+  const prevI = t - 1, yoyI = A.keys.indexOf(A.keys[t] - 12);
+  const mv = movers(pair, P);
+  const both = mv.filter(m => m.st === "both");
+  const nUp = both.filter(m => m.d > 0).length, nDn = both.filter(m => m.d < 0).length;
+  const best = both.slice().sort((a, b) => b.d - a.d)[0], worst = both.slice().sort((a, b) => a.d - b.d)[0];
+  const sparkVals = tot.slice(Math.max(0, t - 23), t + 1);
+  const cmpName = S.cmp === "prev" ? "к пред. периоду" : S.cmp === "yoy" ? "к году назад" : S.cmp === "ytd" ? "с начала года" : "к " + pair.la;
+  c.insertAdjacentHTML("beforeend", pageHead(`${esc(S.metric)}: ${esc(pair.lb)}`, `${S.group ? "Группа «" + esc(S.group) + "». " : ""}Сравнение ${CMP_TXT[S.cmp]} (${esc(pair.la)}).${info.agg === "avg" ? " Показатель усредняется по позициям и периодам." : ""}`));
+  c.insertAdjacentHTML("beforeend", `<div class="grid g-kpi">
+    <div class="card kpi"><span class="kpi-label">${info.agg === "avg" ? "Среднее по позициям" : "Итого"} · ${esc(pair.lb)}</span><span class="kpi-value">${fmtC(curTot)}</span>
+      <div class="kpi-row">${chip(pctCh(curTot, baseTot))}<span>${fmtS(curTot - baseTot)} ${esc(cmpName)}</span></div><div class="kpi-spark">${sparkline(sparkVals, { w: 260, h: 36, fluid: true, color: "var(--accent)" })}</div></div>
+    <div class="card kpi"><span class="kpi-label">К прошлому ${GNAME[S.g]}у / к году назад</span>
+      <div class="kpi-row" style="font-size:13px;gap:10px"><span>${esc(prevI >= 0 ? A.labels[prevI] : "—")}</span>${chip(prevI >= 0 ? pctCh(curTot, A.agg === "avg" ? mean(P.map(p => A.vals[p][prevI])) : sum(P.map(p => A.vals[p][prevI]))) : NaN)}</div>
+      <div class="kpi-row" style="font-size:13px;gap:10px"><span>${esc(yoyI >= 0 ? A.labels[yoyI] : pLabel(A.keys[t] - 12, A.g))}</span>${chip(yoyI >= 0 ? pctCh(curTot, A.agg === "avg" ? mean(P.map(p => A.vals[p][yoyI])) : sum(P.map(p => A.vals[p][yoyI]))) : NaN)}</div>
+      <span class="muted" style="font-size:12px">${A.full[t] ? "" : "⚠ период неполный — данные не за все месяцы"}</span></div>
+    <div class="card kpi"><span class="kpi-label">Позиции ${esc(cmpName)}</span>
+      <div class="kpi-row" style="font-size:14px;gap:12px"><span class="chip up">▲ ${nUp} растут</span><span class="chip down">▼ ${nDn} падают</span></div>
+      <div class="kpi-row">${mv.filter(m => m.st === "new").length} новых · ${mv.filter(m => m.st === "gone").length} выбыло · всего ${P.length}</div>
+      <div style="height:8px;border-radius:4px;overflow:hidden;display:flex;background:var(--surface-3);margin-top:4px"><i style="width:${both.length ? nUp / both.length * 100 : 0}%;background:var(--up)"></i><i style="width:${both.length ? nDn / both.length * 100 : 0}%;background:var(--down);margin-left:auto"></i></div></div>
+    <div class="card kpi"><span class="kpi-label">Лидер роста</span><span class="kpi-name">${best && best.d > 0 ? esc(best.name) : "—"}</span><div class="kpi-row">${best && best.d > 0 ? chip(best.pct) + " " + fmtS(best.d) : ""}</div>
+      <span class="kpi-label" style="margin-top:4px">Сильнее всего упала</span><span class="kpi-name">${worst && worst.d < 0 ? esc(worst.name) : "—"}</span><div class="kpi-row">${worst && worst.d < 0 ? chip(worst.pct) + " " + fmtS(worst.d) : ""}</div></div>
+  </div>`);
+  c.insertAdjacentHTML("beforeend", `<div class="grid g-2">${cardHTML("ov-trend", "Динамика", "Наведите курсор на точку — цифры; щёлкните — выбрать период", pngBtn("ov-trend"))}${cardHTML("ov-ins", "Главное", "Выводы считаются автоматически", "", `<ul class="insights" id="ins"></ul>`)}</div>`);
+  c.insertAdjacentHTML("beforeend", `<div class="grid g-2e">${cardHTML("ov-bridge", `Мост: что изменило ${info.agg === "avg" ? "показатель" : "итог"}`, `${esc(pair.la)} → ${esc(pair.lb)}, вклад крупнейших позиций`, pngBtn("ov-bridge"))}${cardHTML("ov-movers", "Лидеры роста и падения", `Абсолютное изменение ${esc(cmpName)}. Щёлкните строку — карточка позиции`, pngBtn("ov-movers"))}</div>`);
+  c.insertAdjacentHTML("beforeend", cardHTML("ov-struct", "Структура: крупнейшие позиции", `Доли в «${esc(S.metric)}» по периодам — видно, как меняется вклад каждой позиции`, pngBtn("ov-struct")));
+  // динамика: текущий ряд + прошлый год
+  const yoyShift = A.g === "M" ? 12 : A.g === "Q" ? 4 : 1;
+  const series = [{ name: S.metric + (S.group ? " · " + S.group : ""), values: tot, color: "var(--accent)", width: 2.4, area: true, fmt: fmt }];
+  if (A.g !== "Y" && A.keys.length > yoyShift) series.push({ name: "Год назад", values: tot.map((_, i) => i - yoyShift >= 0 ? tot[i - yoyShift] : NaN), color: "var(--fg-3)", dash: true, width: 1.5, endDot: false });
+  lineChart($("#ov-trend .card-b"), { labels: A.labels, series, markX: t, height: 280, onClick: i => { S.t = i; render(); }, tipLabels: A.labels.map((l, i) => l + (A.full[i] ? "" : " (неполный)")) });
+  $("#ins").innerHTML = insights(pair, mv).map(x => `<li><span class="ins-ico ${x.k}">${x.ico}</span><span>${x.html}</span></li>`).join("");
+  // мост
+  if (pair.a && info.agg === "sum") {
+    const ranked = mv.slice().sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+    const fit = Math.max(2, Math.min(7, Math.floor(($("#ov-bridge .card-b").clientWidth || 600) / 66) - 3));
+    const topN = ranked.slice(0, fit), rest = ranked.slice(fit);
+    const steps = [{ name: pair.la, v: sum(P.map(p => pair.a[p])) || 0, total: true }];
+    topN.forEach(m => steps.push({ name: m.name, v: m.d, tip: `<div class="t-r"><span>${esc(pair.la)}</span><b>${fmt(m.a)}</b></div><div class="t-r"><span>${esc(pair.lb)}</span><b>${fmt(m.b)}</b></div>` }));
+    if (rest.length) steps.push({ name: `Прочие (${rest.length})`, v: rest.reduce((s, m) => s + m.d, 0) });
+    steps.push({ name: pair.lb, v: curTot, total: true });
+    waterfall($("#ov-bridge .card-b"), steps, { height: 300 });
+  } else $("#ov-bridge .card-b").innerHTML = `<div class="empty">${!pair.a ? "Нет данных для периода сравнения" : "Мост строится для суммируемых показателей (выручка, затраты, объём). Для цен и долей смотрите «Лидеры роста и падения»."}</div>`;
+  // лидеры
+  const ranked = mv.filter(m => isNum(m.d) && m.d !== 0).sort((a, b) => b.d - a.d);
+  const shown = ranked.length > 12 ? ranked.slice(0, 6).concat(ranked.slice(-6)) : ranked;
+  hbarChart($("#ov-movers .card-b"), shown.map(m => ({ name: m.name, v: m.d, p: m.p, tip: `<div class="t-r"><span>${esc(pair.la)}</span><b>${fmt(m.a)}</b></div><div class="t-r"><span>${esc(pair.lb)}</span><b>${fmt(m.b)}</b></div><div class="t-r"><span>Изменение</span><b>${m.st === "both" ? fmtP(m.pct) : m.st === "new" ? "новая" : "выбыла"}</b></div>` })), { onClick: d => { S.detailPos = d.p; go("detail"); } });
+  // структура: доли топ-позиций (100%)
+  structChart($("#ov-struct .card-b"), A, P, t);
+  bindPng(c);
+};
+function structChart(host, A, P, t) {
+  if (A.agg !== "sum") { host.innerHTML = `<div class="empty">Доли считаются для суммируемых показателей.</div>`; return; }
+  const n = A.keys.length; const from = Math.max(0, n - (A.g === "M" ? 24 : A.g === "Q" ? 12 : 10));
+  const totals = A.keys.map((_, i) => sum(P.map(p => A.vals[p][i])));
+  const rankBy = P.map(p => ({ p, v: A.vals[p][t] })).filter(x => isNum(x.v)).sort((a, b) => b.v - a.v);
+  const top = rankBy.slice(0, 7).map(x => x.p);
+  const series = top.map((p, k) => ({ name: DS.positions[p].name, color: scol(k), values: A.vals[p].slice(from).map((v, j) => isNum(v) && totals[from + j] ? v / totals[from + j] * 100 : NaN) }));
+  if (P.length > top.length) series.push({ name: "Прочие", color: "var(--total)", values: totals.slice(from).map((tt, j) => { const s = sum(top.map(p => A.vals[p][from + j])); return tt ? (tt - (isNum(s) ? s : 0)) / tt * 100 : NaN; }) });
+  stackedBars(host, A.labels.slice(from), series);
+}
+function stackedBars(host, labels, series) {
+  host.innerHTML = ""; host.classList.add("chart");
+  const W = Math.max(300, host.clientWidth || 600), H = 270, L = tw("100%", 10.5, true) + 14, R = 8, T = 8, B = 24;
+  const lg = document.createElement("div"); lg.className = "legend";
+  lg.innerHTML = series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join(""); host.appendChild(lg);
+  const svg = svgEl(W, H); host.appendChild(svg);
+  const n = labels.length, iw = W - L - R, ih = H - T - B, slot = iw / n, bw = Math.max(3, slot - 2);
+  [0, 25, 50, 75, 100].forEach(v => { const yy = T + ih - v / 100 * ih; add(svg, "line", { x1: L, x2: W - R, y1: yy, y2: yy, class: "grid-l" }); add(svg, "text", { x: L - 6, y: yy + 3.5, "text-anchor": "end", class: "axis-num" }, v + "%"); });
+  const every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(iw / (Math.max(...labels.map(l => tw(l, 11))) + 14)))));
+  for (let i = 0; i < n; i++) {
+    let acc = 0; const x0 = L + i * slot + (slot - bw) / 2;
+    series.forEach(s => { const v = isNum(s.values[i]) ? Math.max(0, s.values[i]) : 0; if (v <= 0) return; const h = v / 100 * ih; add(svg, "rect", { x: x0, y: T + ih - (acc + v) / 100 * ih + 1, width: bw, height: Math.max(0, h - 1), fill: s.color }); acc += v; });
+    if (i % every === 0) add(svg, "text", { x: L + i * slot + slot / 2, y: H - 8, "text-anchor": "middle" }, labels[i]);
+    const hit = add(svg, "rect", { x: L + i * slot, y: T, width: slot, height: ih, fill: "transparent" });
+    hit.addEventListener("mousemove", ev => tip.show(`<div class="t-h">${esc(labels[i])}</div>` + series.map(s => `<div class="t-r"><span><span class="sw" style="background:${s.color}"></span>${esc(s.name)}</span><b>${isNum(s.values[i]) ? nf(1, 1).format(s.values[i]) + "%" : "—"}</b></div>`).join(""), ev.clientX, ev.clientY));
+    hit.addEventListener("mouseleave", () => tip.hide());
+  }
+}
+
+/* ---------- Позиции (таблица) ---------- */
+VIEWS.table = c => {
+  const pair = comparePair(); const A = pair.A; const t = pair.t; const P = visiblePos();
+  const yoyI = A.keys.indexOf(A.keys[t] - 12);
+  const totB = sum(P.map(p => pair.b[p]));
+  const nSpark = A.g === "M" ? 13 : A.g === "Q" ? 9 : 6;
+  let rows = P.map(p => {
+    const v = A.vals[p], b = v[t], prev = t > 0 ? v[t - 1] : NaN, yo = yoyI >= 0 ? v[yoyI] : NaN, a = pair.a ? pair.a[p] : NaN;
+    const cur = pair.ytd ? pair.b[p] : b;
+    return { p, name: DS.positions[p].name, group: DS.positions[p].group, cur, a, d: (isNum(cur) ? cur : 0) - (isNum(a) ? a : 0), dp: pctCh(cur, a), st: !isNum(a) && isNum(cur) ? "new" : isNum(a) && !isNum(cur) ? "gone" : "",
+      mom: pctCh(b, prev), yoy: pctCh(b, yo), share: A.agg === "sum" && totB ? (isNum(cur) ? cur : 0) / totB * 100 : NaN, spark: v.slice(Math.max(0, t - nSpark + 1), t + 1) };
+  });
+  const q = S.tableSearch.trim().toLowerCase();
+  if (q) rows = rows.filter(r => r.name.toLowerCase().includes(q) || r.group.toLowerCase().includes(q));
+  const sc = S.tableSort; const keyv = r => { const v = r[sc.col]; return typeof v === "string" ? v : isNum(v) ? v : -Infinity; };
+  rows.sort((x, y) => { const a = keyv(x), b = keyv(y); return typeof a === "string" ? sc.dir * a.localeCompare(b, "ru") : sc.dir * (a - b); });
+  const cols = [
+    ["name", "Позиция", "l pos"], ["spark", "Динамика", "nosort"], ["cur", pair.ytd ? "С начала года" : esc(pair.lb), ""], ["a", esc(pair.la), ""], ["d", "Δ", ""], ["dp", "Δ %", ""],
+    ["mom", "к пред. " + GNAME[S.g] + "у", ""], ["yoy", "к году назад", ""], ["share", "Доля", ""]
+  ];
+  const th = cols.map(([k, n, cls]) => `<th class="${cls}" data-sort="${cls.includes("nosort") ? "" : k}">${n}${sc.col === k ? `<span class="arr"> ${sc.dir > 0 ? "↑" : "↓"}</span>` : ""}</th>`).join("");
+  const rowHTML = r => `<tr data-p="${r.p}"><td class="l pos" title="${esc(r.name)}">${esc(r.name)}${r.group && S.tableMode !== "group" ? ` <span class="tag">${esc(r.group)}</span>` : ""}</td>
+    <td>${sparkline(r.spark, { w: 96, h: 24 })}</td><td class="num">${fmt(r.cur)}</td><td class="num dim">${fmt(r.a)}</td><td class="num">${isNum(r.cur) || isNum(r.a) ? (r.d > 0 ? "+" : "") + fmt(r.d) : "—"}</td>
+    <td>${chip(r.dp, r.st || undefined)}</td><td>${chip(r.mom)}</td><td>${chip(r.yoy)}</td>
+    <td>${isNum(r.share) ? `<div class="bar-cell"><span class="num">${nf(1, 1).format(r.share)}%</span><span class="share-bar"><i style="width:${Math.min(100, Math.max(0, r.share))}%"></i></span></div>` : "—"}</td></tr>`;
+  let body = "";
+  if (S.tableMode === "group" && groups().length) {
+    const byG = new Map(); rows.forEach(r => { if (!byG.has(r.group)) byG.set(r.group, []); byG.get(r.group).push(r); });
+    for (const [g, rs] of byG) {
+      const gc = sum(rs.map(r => r.cur)), ga = sum(rs.map(r => r.a));
+      body += `<tr class="grp"><td class="l pos">${esc(g || "Без группы")} <span class="muted">(${rs.length})</span></td><td></td><td class="num">${A.agg === "sum" ? fmt(gc) : ""}</td><td class="num">${A.agg === "sum" ? fmt(ga) : ""}</td><td class="num">${A.agg === "sum" ? fmtS(gc - ga) : ""}</td><td>${A.agg === "sum" ? chip(pctCh(gc, ga)) : ""}</td><td></td><td></td><td>${A.agg === "sum" && totB ? nf(1, 1).format(gc / totB * 100) + "%" : ""}</td></tr>` + rs.map(rowHTML).join("");
+    }
+  } else body = rows.slice(0, 1000).map(rowHTML).join("");
+  const ta = sum(rows.map(r => r.a)), tb = sum(rows.map(r => r.cur));
+  const foot = A.agg === "sum" ? `<tr class="tot"><td class="l pos">Итого (${rows.length})</td><td></td><td class="num">${fmt(tb)}</td><td class="num">${fmt(ta)}</td><td class="num">${fmtS(tb - ta)}</td><td>${chip(pctCh(tb, ta))}</td><td></td><td></td><td></td></tr>` : "";
+  c.insertAdjacentHTML("beforeend", pageHead("Позиции", `${esc(S.metric)} · ${esc(pair.lb)} против ${esc(pair.la)}. Щёлкните заголовок — сортировка, строку — карточка позиции.`,
+    `<input class="input" id="tb-search" type="search" placeholder="Поиск позиции…" value="${esc(S.tableSearch)}" style="width:200px">
+     ${groups().length ? `<div class="seg"><button data-tm="flat" aria-pressed="${S.tableMode !== "group"}">Списком</button><button data-tm="group" aria-pressed="${S.tableMode === "group"}">По группам</button></div>` : ""}
+     <button class="btn sm" id="tbl-copy">Копировать</button><button class="btn sm" id="tbl-csv">CSV</button>`));
+  c.insertAdjacentHTML("beforeend", `<section class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr>${th}</tr></thead><tbody>${body || `<tr><td colspan="9" class="empty">Ничего не найдено</td></tr>`}</tbody><tfoot>${foot}</tfoot></table></div></section>`);
+  $$(".tbl th[data-sort]", c).forEach(h => h.onclick = () => { const k = h.dataset.sort; if (!k) return; S.tableSort = { col: k, dir: S.tableSort.col === k ? -S.tableSort.dir : (k === "name" ? 1 : -1) }; render(); });
+  $$(".tbl tbody tr[data-p]", c).forEach(r => r.onclick = () => { S.detailPos = +r.dataset.p; go("detail"); });
+  const si = $("#tb-search"); si.oninput = () => { S.tableSearch = si.value; clearTimeout(si._t); si._t = setTimeout(() => { render(); const n = $("#tb-search"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 200); };
+  $$("[data-tm]", c).forEach(b => b.onclick = () => { S.tableMode = b.dataset.tm; render(); });
+  const table = () => [["Позиция", "Группа", pair.ytd ? "С начала года" : pair.lb, pair.la, "Δ", "Δ %", "к пред.", "к году назад", "Доля %"], ...rows.map(r => [r.name, r.group, r.cur, r.a, r.d, r.dp, r.mom, r.yoy, r.share])];
+  const cell = v => isNum(v) ? String(Math.round(v * 1e4) / 1e4).replace(".", ",") : v == null ? "" : String(v);
+  $("#tbl-copy").onclick = () => copyText(table().map(r => r.map(cell).join("\t")).join("\n"));
+  $("#tbl-csv").onclick = () => download(new Blob(["﻿" + table().map(r => r.map(v => { const s = cell(v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(";")).join("\r\n")], { type: "text/csv" }), `позиции_${S.metric}_${pair.lb}.csv`);
+};
+
+/* ---------- Тепловая карта ---------- */
+function divColor(v, lim) { // синий рост / красный падение, серая середина
+  if (!isNum(v)) return "transparent";
+  const t = Math.max(-1, Math.min(1, v / lim));
+  const mid = css("--mid") || "#f0efec"; const up = css("--up"), dn = css("--down");
+  return `color-mix(in srgb, ${t >= 0 ? up : dn} ${Math.round(Math.abs(t) * 85)}%, ${mid})`;
+}
+VIEWS.heat = c => {
+  const A = agg(S.metric, S.g); const P = visiblePos(); const n = A.keys.length;
+  const maxCols = A.g === "M" ? 36 : 40; const from = Math.max(0, n - maxCols);
+  const shift = A.g === "M" ? 12 : A.g === "Q" ? 4 : 1;
+  const mode = S.heatMode;
+  const val = (p, i) => { const v = A.vals[p]; if (mode === "value") return v[i]; if (mode === "mom") return pctCh(v[i], v[i - 1]); return i - shift >= 0 ? pctCh(v[i], v[i - shift]) : NaN; };
+  let rows = P.map(p => ({ p, name: DS.positions[p].name, tot: sum(A.vals[p].slice(from)), vol: (() => { const ch = []; for (let i = from + 1; i < n; i++) { const x = pctCh(A.vals[p][i], A.vals[p][i - 1]); if (isNum(x)) ch.push(x); } const m = mean(ch); return Math.sqrt(mean(ch.map(x => (x - m) ** 2))); })(), last: val(p, n - 1) }));
+  rows.sort((a, b) => S.heatSort === "name" ? a.name.localeCompare(b.name, "ru") : S.heatSort === "vol" ? (b.vol || 0) - (a.vol || 0) : S.heatSort === "last" ? (isNum(b.last) ? b.last : -1e18) - (isNum(a.last) ? a.last : -1e18) : (b.tot || 0) - (a.tot || 0));
+  rows = rows.slice(0, 300);
+  const allV = []; rows.forEach(r => { for (let i = from; i < n; i++) { const v = val(r.p, i); if (isNum(v)) allV.push(Math.abs(v)); } });
+  allV.sort((a, b) => a - b); const lim = mode === "value" ? 1 : Math.max(1, allV[Math.floor(allV.length * 0.9)] || 10);
+  const rowMax = r => Math.max(...A.vals[r.p].slice(from).filter(isNum).map(Math.abs), 1);
+  const seqCol = (v, mx) => isNum(v) ? `color-mix(in srgb, var(--s1) ${Math.round(8 + 80 * Math.abs(v) / mx)}%, var(--surface))` : "transparent";
+  const head = A.labels.slice(from).map((l, j) => `<th title="${l}">${l.replace(/ (\d{2})(\d{2})$/, " $2")}</th>`).join("");
+  const body = rows.map(r => { const mx = rowMax(r); let tds = "";
+    for (let i = from; i < n; i++) { const v = val(r.p, i); const bg = mode === "value" ? seqCol(v, mx) : divColor(v, lim);
+      const strong = mode === "value" ? isNum(v) && Math.abs(v) / mx > 0.6 : isNum(v) && Math.abs(v) / lim > 0.55;
+      tds += `<td data-p="${r.p}" data-i="${i}" style="background:${bg};color:${strong ? "#fff" : "var(--fg-2)"}">${S.heatNums && isNum(v) ? (mode === "value" ? fmtC(v).replace(" тыс.", "k").replace(" млн", "M").replace(" млрд", "B") : Math.round(v)) : ""}</td>`; }
+    return `<tr><td class="nm" data-pos="${r.p}" title="${esc(r.name)}">${esc(r.name)}</td>${tds}</tr>`; }).join("");
+  const ramp = mode === "value" ? `linear-gradient(90deg, var(--surface), var(--s1))` : `linear-gradient(90deg, var(--down), var(--mid), var(--up))`;
+  c.insertAdjacentHTML("beforeend", pageHead("Карта изменений", `Позиции × периоды: сразу видно, где и когда был рост (синий) или падение (красный). ${esc(S.metric)}.`,
+    `<div class="seg"><button data-hm="mom" aria-pressed="${mode === "mom"}">% к пред. ${GNAME[S.g]}у</button><button data-hm="yoy" aria-pressed="${mode === "yoy"}">% к году назад</button><button data-hm="value" aria-pressed="${mode === "value"}">Значения</button></div>
+     <select class="select" id="hm-sort"><option value="total" ${S.heatSort === "total" ? "selected" : ""}>Сначала крупные</option><option value="last" ${S.heatSort === "last" ? "selected" : ""}>По последнему изменению</option><option value="vol" ${S.heatSort === "vol" ? "selected" : ""}>Самые нестабильные</option><option value="name" ${S.heatSort === "name" ? "selected" : ""}>По алфавиту</option></select>
+     <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="hm-nums" ${S.heatNums ? "checked" : ""}> цифры</label>`));
+  c.insertAdjacentHTML("beforeend", `<section class="card"><div class="card-h"><div class="hm-scale"><span>${mode === "value" ? "меньше" : "−" + Math.round(lim) + "%"}</span><span class="ramp" style="background:${ramp}"></span><span>${mode === "value" ? "больше (в своей строке)" : "+" + Math.round(lim) + "%"}</span></div><span class="muted" style="font-size:12px">${rows.length < P.length ? `показаны ${rows.length} из ${P.length}` : ""}</span></div>
+    <div class="card-b"><div class="hm-wrap"><table class="hm"><thead><tr><th class="nm"></th>${head}</tr></thead><tbody>${body}</tbody></table></div></div></section>`);
+  $$("[data-hm]", c).forEach(b => b.onclick = () => { S.heatMode = b.dataset.hm; render(); });
+  $("#hm-sort").onchange = e => { S.heatSort = e.target.value; render(); };
+  $("#hm-nums").onchange = e => { S.heatNums = e.target.checked; render(); };
+  const tb = $(".hm tbody", c);
+  tb.addEventListener("mousemove", ev => { const td = ev.target.closest("td[data-i]"); if (!td) { tip.hide(); return; } const p = +td.dataset.p, i = +td.dataset.i; const v = A.vals[p];
+    tip.show(`<div class="t-h">${esc(DS.positions[p].name)} · ${A.labels[i]}</div><div class="t-r"><span>Значение</span><b>${fmt(v[i])}</b></div><div class="t-r"><span>к пред. ${GNAME[S.g]}у</span><b>${fmtP(pctCh(v[i], v[i - 1]))}</b></div><div class="t-r"><span>к году назад</span><b>${i - shift >= 0 ? fmtP(pctCh(v[i], v[i - shift])) : "—"}</b></div>`, ev.clientX, ev.clientY); });
+  tb.addEventListener("mouseleave", () => tip.hide());
+  tb.addEventListener("click", ev => { const td = ev.target.closest("td[data-i],td[data-pos]"); if (!td) return; if (td.dataset.i) S.t = +td.dataset.i; S.detailPos = +(td.dataset.p ?? td.dataset.pos); go("detail"); });
+};
+
+/* ---------- Карточка позиции ---------- */
+VIEWS.detail = c => {
+  const P = visiblePos(); if (!P.includes(S.detailPos)) S.detailPos = P[0] ?? 0;
+  const p = S.detailPos; const pos = DS.positions[p];
+  const A = agg(S.metric, S.g); const v = A.vals[p]; const n = v.length;
+  const t = S.t < 0 ? n - 1 : S.t;
+  const idx = v.map((x, i) => i).filter(i => isNum(v[i]));
+  const opts = P.map(i => `<option value="${i}" ${i === p ? "selected" : ""}>${esc(DS.positions[i].name)}${DS.positions[i].group ? " — " + esc(DS.positions[i].group) : ""}</option>`).join("");
+  c.insertAdjacentHTML("beforeend", pageHead(esc(pos.name), `${pos.group ? "Группа «" + esc(pos.group) + "». " : ""}${esc(S.metric)}, шаг — ${GNAME[S.g]}.`,
+    `<button class="btn icon-btn" id="dp-prev" title="Предыдущая позиция">‹</button><select class="select" id="dp-sel" style="max-width:320px">${opts}</select><button class="btn icon-btn" id="dp-next" title="Следующая позиция">›</button>`));
+  if (!idx.length) { c.insertAdjacentHTML("beforeend", `<div class="card empty">По этой позиции нет данных показателя «${esc(S.metric)}».</div>`); bindDetailNav(P, p); return; }
+  const vals = idx.map(i => v[i]); const mx = Math.max(...vals), mn = Math.min(...vals);
+  const shift = A.g === "M" ? 12 : A.g === "Q" ? 4 : 1;
+  const firstI = idx[0], lastI = idx[idx.length - 1];
+  const years = (A.keys[lastI] - A.keys[firstI]) / 12;
+  const cagr = years >= 1 && v[firstI] > 0 && v[lastI] > 0 ? (Math.pow(v[lastI] / v[firstI], 1 / years) - 1) * 100 : NaN;
+  const chs = []; for (let i = 1; i < n; i++) { const x = pctCh(v[i], v[i - 1]); if (isNum(x)) chs.push(x); }
+  const vol = Math.sqrt(mean(chs.map(x => (x - mean(chs)) ** 2)));
+  const totAll = totalSeries(A, P); const share = A.agg === "sum" && totAll[t] ? v[t] / totAll[t] * 100 : NaN;
+  c.insertAdjacentHTML("beforeend", `<div class="grid g-kpi">
+    <div class="card kpi"><span class="kpi-label">${esc(A.labels[t])}</span><span class="kpi-value">${fmtC(v[t])}</span><div class="kpi-row">${chip(pctCh(v[t], v[t - 1]))}<span>к пред.</span>${chip(t - shift >= 0 ? pctCh(v[t], v[t - shift]) : NaN)}<span>к году назад</span></div></div>
+    <div class="card kpi"><span class="kpi-label">Максимум / минимум</span><span class="kpi-value" style="font-size:20px">${fmtC(mx)} / ${fmtC(mn)}</span><div class="kpi-row">${A.labels[idx[vals.indexOf(mx)]]} · ${A.labels[idx[vals.indexOf(mn)]]}</div></div>
+    <div class="card kpi"><span class="kpi-label">Среднегодовой темп</span><span class="kpi-value" style="font-size:22px">${isNum(cagr) ? fmtP(cagr) : "—"}</span><div class="kpi-row">${isNum(cagr) ? `с ${A.labels[firstI]} по ${A.labels[lastI]}` : "нужно больше года данных"}</div></div>
+    <div class="card kpi"><span class="kpi-label">Стабильность</span><span class="kpi-value" style="font-size:22px">${isNum(vol) ? "±" + nf(1).format(vol) + "%" : "—"}</span><div class="kpi-row">типичное колебание к пред. ${GNAME[S.g]}у${isNum(share) ? ` · доля ${nf(1, 1).format(share)}%` : ""}</div></div>
+  </div>`);
+  c.insertAdjacentHTML("beforeend", `<div class="grid g-2">${cardHTML("dt-trend", "Вся история", "Позиция и её место в общем итоге", pngBtn("dt-trend"))}${cardHTML("dt-season", A.g === "Y" ? "По годам" : "Год к году", A.g === "Y" ? "" : "Каждая линия — год. Так видна сезонность и рост к прошлым годам", pngBtn("dt-season"))}</div>`);
+  lineChart($("#dt-trend .card-b"), { labels: A.labels, series: [{ name: pos.name, values: v, color: "var(--accent)", width: 2.4, area: true }], markX: t, height: 260, onClick: i => { S.t = i; render(); } });
+  if (A.g !== "Y") {
+    const per = A.g === "M" ? 12 : 4; const ys = Array.from(new Set(A.keys.map(yearOf))).slice(-6);
+    const series = ys.map((y, k) => ({ name: String(y), color: k === ys.length - 1 ? "var(--accent)" : scol(k), width: k === ys.length - 1 ? 2.6 : 1.6,
+      values: Array.from({ length: per }, (_, m) => { const i = A.keys.indexOf(y * 12 + m * (12 / per)); return i >= 0 ? v[i] : NaN; }) }));
+    lineChart($("#dt-season .card-b"), { labels: A.g === "M" ? MON_SHORT : ["I кв", "II кв", "III кв", "IV кв"], series, height: 260 });
+  } else hbarChart($("#dt-season .card-b"), idx.map(i => ({ name: A.labels[i], v: v[i] })), { fmt: fmtC });
+  // таблица год × месяц
+  if (A.g !== "Y") {
+    const per = A.g === "M" ? 12 : 4; const ys = Array.from(new Set(A.keys.map(yearOf)));
+    const cols = A.g === "M" ? MON_SHORT : ["I кв", "II кв", "III кв", "IV кв"];
+    let html = `<table class="tbl"><thead><tr><th class="l nosort">Год</th>${cols.map(m => `<th class="nosort">${m}</th>`).join("")}<th class="nosort">${A.agg === "sum" ? "За год" : "Среднее"}</th><th class="nosort">к пред. году</th></tr></thead><tbody>`;
+    let prevYear = NaN;
+    ys.forEach(y => { const row = Array.from({ length: per }, (_, m) => { const i = A.keys.indexOf(y * 12 + m * (12 / per)); return i >= 0 ? v[i] : NaN; });
+      const prow = Array.from({ length: per }, (_, m) => { const i = A.keys.indexOf((y - 1) * 12 + m * (12 / per)); return i >= 0 ? v[i] : NaN; });
+      const yt = A.agg === "sum" ? sum(row) : mean(row); const cnt = row.filter(isNum).length;
+      const comparable = row.map((x, m) => isNum(x) && isNum(prow[m])); const ytC = A.agg === "sum" ? sum(row.filter((_, m) => comparable[m])) : mean(row.filter((_, m) => comparable[m])); const pyC = A.agg === "sum" ? sum(prow.filter((_, m) => comparable[m])) : mean(prow.filter((_, m) => comparable[m]));
+      html += `<tr style="cursor:default"><td class="l"><b>${y}</b>${cnt < per ? ` <span class="muted">(${cnt} из ${per})</span>` : ""}</td>${row.map((x, m) => { const ch = pctCh(x, prow[m]); return `<td class="num" title="${isNum(ch) ? "к " + (y - 1) + ": " + fmtP(ch) : ""}" style="${isNum(ch) ? `box-shadow: inset 0 -3px 0 ${ch >= 0 ? "var(--up)" : "var(--down)"}` : ""}">${fmtC(x)}</td>`; }).join("")}
+        <td class="num"><b>${fmtC(yt)}</b></td><td>${chip(pctCh(ytC, pyC))}</td></tr>`; prevYear = yt; });
+    html += `</tbody></table>`;
+    c.insertAdjacentHTML("beforeend", cardHTML("dt-table", "Таблица по годам", "Полоска под ячейкой: синяя — выше того же периода прошлого года, красная — ниже. «к пред. году» — по сопоставимым периодам", "", `<div style="overflow:auto">${html}</div>`));
+  }
+  // остальные показатели позиции
+  const others = allMetricNames().filter(m => m !== S.metric).slice(0, 4);
+  if (others.length) {
+    c.insertAdjacentHTML("beforeend", `<div class="grid g-2e" id="dt-others">${others.map((m, k) => cardHTML("dt-m" + k, esc(m), "", "")).join("")}</div>`);
+    others.forEach((m, k) => { const B = agg(m, S.g); lineChart($("#dt-m" + k + " .card-b"), { labels: B.labels, series: [{ name: m, values: B.vals[p], color: scol(k + 1), width: 2 }], height: 170, markX: Math.min(t, B.labels.length - 1) }); });
+  }
+  bindDetailNav(P, p); bindPng(c);
+};
+function bindDetailNav(P, p) {
+  $("#dp-sel").onchange = e => { S.detailPos = +e.target.value; render(); };
+  const k = P.indexOf(p);
+  $("#dp-prev").onclick = () => { S.detailPos = P[(k - 1 + P.length) % P.length]; render(); };
+  $("#dp-next").onclick = () => { S.detailPos = P[(k + 1) % P.length]; render(); };
+}
+
+/* ---------- Факторы ---------- */
+VIEWS.factors = c => {
+  const names = allMetricNames(); const sugg = suggestFormulas();
+  c.insertAdjacentHTML("beforeend", pageHead("Факторный анализ", `Почему изменился результат: раскладываем изменение на вклад каждого фактора. Сравнение: ${CMP_TXT[S.cmp]}.`));
+  c.insertAdjacentHTML("beforeend", cardHTML("fa-model", "Модель", "Результат = формула из показателей. Нажимайте на показатели и знаки — формула соберётся сама", "", `
+    <div style="display:flex;flex-direction:column;gap:10px">
+      ${sugg.length ? `<div class="formula-row"><span class="muted">Нашёл в данных:</span>${sugg.slice(0, 2).map((s, i) => `<button class="btn sm" data-sug="${i}">[${esc(s.y)}] = ${esc(s.text)}</button>`).join("")}</div>` : ""}
+      <div class="formula-row"><b>Результат =</b><input class="input" id="fa-formula" style="flex:1;min-width:240px" value="${esc(S.factor.formula)}" placeholder="например: [Объём] × [Цена]"></div>
+      <div class="formula-row">${names.map(n => `<button class="metric-chip" data-ins="[${esc(n)}]">${esc(n)}</button>`).join("")}
+        ${["×", "÷", "+", "−", "(", ")"].map(o => `<button class="metric-chip op-chip" data-ins=" ${o} ">${o}</button>`).join("")}<button class="btn ghost sm" id="fa-clear">Очистить</button></div>
+      <div class="formula-row"><span class="muted">Метод:</span><div class="seg">${[["shapley", "Шепли (без остатка)"], ["integral", "Интегральный"], ["chain", "Цепные подстановки"]].map(([k, l]) => `<button data-fm="${k}" aria-pressed="${S.factor.method === k}">${l}</button>`).join("")}</div>
+        <span class="muted" style="font-size:12px">Шепли и интегральный не зависят от порядка факторов; цепные подстановки — в порядке формулы</span></div>
+      <div id="fa-msg"></div>
+    </div>`));
+  c.insertAdjacentHTML("beforeend", `<div class="grid g-2e">${cardHTML("fa-wf", "Вклад факторов", "", pngBtn("fa-wf"))}${cardHTML("fa-pos", "Вклад позиций по факторам", "Крупнейшие изменения", "")}</div>`);
+  $$("[data-ins]", c).forEach(b => b.onclick = () => { const inp = $("#fa-formula"); const s = inp.selectionStart ?? inp.value.length; inp.value = inp.value.slice(0, s) + b.dataset.ins + inp.value.slice(inp.selectionEnd ?? s); inp.focus(); S.factor.formula = inp.value; runFactors(); });
+  $$("[data-sug]", c).forEach(b => b.onclick = () => { S.factor.formula = sugg[+b.dataset.sug].text; $("#fa-formula").value = S.factor.formula; runFactors(); });
+  $$("[data-fm]", c).forEach(b => b.onclick = () => { S.factor.method = b.dataset.fm; render(); });
+  $("#fa-clear").onclick = () => { S.factor.formula = ""; $("#fa-formula").value = ""; runFactors(); };
+  $("#fa-formula").oninput = e => { S.factor.formula = e.target.value; clearTimeout(runFactors._t); runFactors._t = setTimeout(runFactors, 300); };
+  runFactors(); bindPng(c);
+};
+function runFactors() {
+  const msg = $("#fa-msg"), wf = $("#fa-wf .card-b"), tb = $("#fa-pos .card-b");
+  if (!S.factor.formula.trim()) { msg.innerHTML = `<div class="muted">Соберите формулу, например <b>[Объём] × [Цена]</b> — и увидите, сколько изменения дал объём, а сколько цена.</div>`; wf.innerHTML = tb.innerHTML = `<div class="empty">Ждём формулу</div>`; saveState(); return; }
+  let f; try { f = compileFormula(S.factor.formula, allMetricNames()); } catch (e) { msg.innerHTML = `<div class="alert">${esc(e.message)}</div>`; wf.innerHTML = tb.innerHTML = ""; return; }
+  saveState();
+  // значения факторов в периодах A и B по позициям
+  const prs = f.vars.map(m => { const save = S.metric; S.metric = m; const pr = comparePair(m); S.metric = save; return pr; });
+  if (!prs[0].a) { msg.innerHTML = `<div class="alert">Для «${esc(prs[0].la)}» нет данных. Выберите другое сравнение сверху.</div>`; wf.innerHTML = tb.innerHTML = ""; return; }
+  const P = visiblePos(); const k = f.vars.length;
+  const eff = new Array(k).fill(0); let Ya = 0, Yb = 0, newE = 0, goneE = 0, skipped = 0; const perPos = [];
+  for (const p of P) {
+    const xa = prs.map(pr => pr.a[p]), xb = prs.map(pr => pr.b[p]);
+    const okA = xa.every(isNum), okB = xb.every(isNum);
+    if (!okA && !okB) continue;
+    if (okA && !okB) { const y = f.fn(xa); if (isNum(y)) { goneE -= y; Ya += y; } continue; }
+    if (!okA && okB) { const y = f.fn(xb); if (isNum(y)) { newE += y; Yb += y; } continue; }
+    const r = factorDecompose(f, xa, xb, S.factor.method);
+    if (!r) { skipped++; continue; }
+    Ya += r.ya; Yb += r.yb; r.eff.forEach((e, i) => eff[i] += e); perPos.push({ p, ...r, d: r.yb - r.ya });
+  }
+  const resName = (() => { const m = S.factor.formula; const hit = suggestFormulas().find(s => s.text === m); return hit ? hit.y : "Результат"; })();
+  const lin = f.vars.length === 1;
+  msg.innerHTML = `<div class="okmsg">${esc(resName)}: <b>${fmtC(Ya)}</b> (${esc(prs[0].la)}) → <b>${fmtC(Yb)}</b> (${esc(prs[0].lb)}), изменение <b>${fmtS(Yb - Ya)}</b> (${fmtP(pctCh(Yb, Ya))}). Сумма вкладов сходится с изменением${skipped ? `; ${skipped} поз. пропущено (деление на ноль)` : ""}.${f.vars.some(v => metricInfo(v).agg === "avg") && S.g !== DS.base ? " Для цен на укрупнённом шаге берётся среднее за период." : ""}</div>`;
+  const steps = [{ name: prs[0].la, v: Ya, total: true }, ...f.vars.map((v, i) => ({ name: v, v: eff[i], tip: `<div class="t-r"><span>Доля в изменении</span><b>${Yb - Ya ? nf(0).format(eff[i] / (Yb - Ya) * 100) + "%" : "—"}</b></div>` }))];
+  if (newE) steps.push({ name: "Новые позиции", v: newE }); if (goneE) steps.push({ name: "Выбывшие позиции", v: goneE });
+  steps.push({ name: prs[0].lb, v: Yb, total: true });
+  waterfall(wf, steps, { height: 300 });
+  // таблица позиций
+  perPos.sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+  const rows = perPos.slice(0, 40).map(r => `<tr data-p="${r.p}"><td class="l pos" title="${esc(DS.positions[r.p].name)}">${esc(DS.positions[r.p].name)}</td><td class="num">${fmtS(r.d)}</td>${r.eff.map(e => `<td class="num" style="color:${e >= 0 ? "var(--up)" : "var(--down)"}">${fmtS(e)}</td>`).join("")}</tr>`).join("");
+  tb.innerHTML = `<div class="tbl-wrap" style="max-height:330px"><table class="tbl"><thead><tr><th class="l pos nosort">Позиция</th><th class="nosort">Δ итог</th>${f.vars.map(v => `<th class="nosort">${esc(v)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  $$("tr[data-p]", tb).forEach(r => r.onclick = () => { S.detailPos = +r.dataset.p; go("detail"); });
+}
+
+/* ---------- Прогноз и сценарии ---------- */
+VIEWS.forecast = c => {
+  const A = agg(S.metric, S.g); const P = visiblePos(); const season = A.g === "M" ? 12 : A.g === "Q" ? 4 : 1;
+  const maxH = A.g === "M" ? 24 : A.g === "Q" ? 8 : 5; const H = Math.min(S.fcH, maxH);
+  const lastFull = A.full[A.keys.length - 1] ? A.keys.length : A.keys.length - 1;   // неполный последний период не используем
+  const posF = P.map(p => ({ p, f: forecastSeries(A.vals[p].slice(0, lastFull), H, season) }));
+  const histTot = totalSeries(A, P).slice(0, lastFull);
+  let fc, lo, hi, method;
+  if (A.agg === "sum") {
+    const valid = posF.filter(x => x.f);
+    fc = Array.from({ length: H }, (_, i) => sum(valid.map(x => x.f.fc[i])));
+    const tf = forecastSeries(histTot, H, season); method = tf ? tf.method : "—";
+    const sd = tf ? tf.sd : 0; lo = fc.map((v, k) => v - 1.28 * sd * Math.sqrt(1 + k * 0.25)); hi = fc.map((v, k) => v + 1.28 * sd * Math.sqrt(1 + k * 0.25));
+  } else { const tf = forecastSeries(histTot, H, season); fc = tf ? tf.fc : []; lo = tf ? tf.lo : []; hi = tf ? tf.hi : []; method = tf ? tf.method : "—"; }
+  const lastKey = A.keys[lastFull - 1]; const futKeys = Array.from({ length: H }, (_, i) => lastKey + (i + 1) * GSTEP[A.g]);
+  const labels = A.labels.slice(0, lastFull).concat(futKeys.map(k => pLabel(k, A.g)));
+  const scenPct = S.scen.all || 0; const groupPct = g => (S.scen["g:" + g] || 0);
+  const scen = A.agg === "sum" ? Array.from({ length: H }, (_, i) => sum(posF.filter(x => x.f).map(x => x.f.fc[i] * (1 + (scenPct + groupPct(DS.positions[x.p].group)) / 100)))) : fc.map(v => v * (1 + scenPct / 100));
+  const hasScen = scenPct !== 0 || Object.keys(S.scen).some(k => k.startsWith("g:") && S.scen[k]);
+  c.insertAdjacentHTML("beforeend", pageHead("Прогноз и сценарии", `${esc(S.metric)}: прогноз на ${H} ${{ M: "мес.", Q: "кв.", Y: "г." }[S.g]} вперёд. Метод: ${method}. Это ориентир по прошлой динамике, а не обещание.`,
+    `<span class="tb-label">Горизонт</span><div class="seg">${(A.g === "M" ? [3, 6, 12, 24] : A.g === "Q" ? [2, 4, 8] : [1, 3, 5]).map(h => `<button data-h="${h}" aria-pressed="${H === h}">${h}</button>`).join("")}</div>`));
+  const sumH = sum(fc), sumS = sum(scen), lastYear = sum(histTot.slice(-H));
+  c.insertAdjacentHTML("beforeend", `<div class="grid g-kpi">
+    <div class="card kpi"><span class="kpi-label">${A.agg === "sum" ? "Прогноз за горизонт" : "Прогноз на конец горизонта"}</span><span class="kpi-value">${fmtC(A.agg === "sum" ? sumH : fc[H - 1])}</span><div class="kpi-row">${A.agg === "sum" ? chip(pctCh(sumH, lastYear)) + `<span>к последним ${H} ${GNAME[S.g]}ам факта</span>` : ""}</div></div>
+    <div class="card kpi"><span class="kpi-label">Следующий ${GNAME[S.g]} · ${pLabel(futKeys[0], A.g)}</span><span class="kpi-value">${fmtC(fc[0])}</span><div class="kpi-row">80%: ${fmtC(lo[0])} … ${fmtC(hi[0])}</div></div>
+    <div class="card kpi"><span class="kpi-label">Со сценарием</span><span class="kpi-value">${fmtC(A.agg === "sum" ? sumS : scen[H - 1])}</span><div class="kpi-row">${hasScen ? chip(pctCh(A.agg === "sum" ? sumS : scen[H - 1], A.agg === "sum" ? sumH : fc[H - 1])) + "<span>к базовому прогнозу</span>" : "<span>двигайте ползунки ниже</span>"}</div></div>
+  </div>`);
+  c.insertAdjacentHTML("beforeend", `<div class="grid g-2">${cardHTML("fc-chart", "Факт и прогноз", "Пунктир — прогноз, заливка — интервал, в который значение попадает с вероятностью ~80%", pngBtn("fc-chart"))}${cardHTML("fc-scen", "Сценарий «что если»", "Изменение относительно прогноза, %", `<button class="btn ghost sm" id="sc-reset">Сбросить</button>`, `<div id="sc-sliders" style="display:flex;flex-direction:column;gap:10px"></div>`)}</div>`);
+  const pad = new Array(lastFull - 1).fill(NaN);
+  const fcLine = pad.concat([histTot[lastFull - 1]], fc), band = { lo: pad.concat([histTot[lastFull - 1]], lo), hi: pad.concat([histTot[lastFull - 1]], hi) };
+  const series = [{ name: "Факт", values: histTot.concat(new Array(H).fill(NaN)), color: "var(--accent)", width: 2.4 }, { name: "Прогноз", values: fcLine, color: "var(--s1)", dash: true, width: 2, band }];
+  if (hasScen) series.push({ name: "Сценарий", values: pad.concat([histTot[lastFull - 1]], scen), color: "var(--s2)", width: 2 });
+  lineChart($("#fc-chart .card-b"), { labels, series, height: 300, splitX: lastFull - 1 });
+  const sl = $("#sc-sliders"); const gs = groups();
+  const mk = (key, label) => `<div class="slider-row"><label for="sl-${esc(key)}">${esc(label)}</label><input type="range" id="sl-${esc(key)}" min="-50" max="50" step="1" value="${S.scen[key] || 0}" data-k="${esc(key)}"><span class="val">${fmtP(S.scen[key] || 0, 0)}</span></div>`;
+  sl.innerHTML = mk("all", "Все позиции") + (A.agg === "sum" ? gs.map(g => mk("g:" + g, g)).join("") : "") + `<p class="muted" style="margin:0;font-size:12px">Например: «Все позиции +5%» — общий рост цен; группа −10% — потеря клиента в этой группе.</p>`;
+  $$("input[type=range]", sl).forEach(r => { r.oninput = () => { r.nextElementSibling.textContent = fmtP(+r.value, 0); }; r.onchange = () => { S.scen[r.dataset.k] = +r.value; render(); }; });
+  $("#sc-reset").onclick = () => { S.scen = {}; render(); };
+  $$("[data-h]", c).forEach(b => b.onclick = () => { S.fcH = +b.dataset.h; render(); });
+  // таблица прогноза по позициям
+  const rows = posF.filter(x => x.f).map(x => ({ p: x.p, name: DS.positions[x.p].name, next: x.f.fc[0], sumF: A.agg === "sum" ? sum(x.f.fc) : x.f.fc[H - 1], last: sum(A.vals[x.p].slice(lastFull - H, lastFull)) }))
+    .sort((a, b) => (b.sumF || 0) - (a.sumF || 0));
+  c.insertAdjacentHTML("beforeend", cardHTML("fc-table", "Прогноз по позициям", "", `<button class="btn sm" id="fc-copy">Копировать</button>`, `<div class="tbl-wrap" style="max-height:420px"><table class="tbl"><thead><tr><th class="l pos nosort">Позиция</th><th class="nosort">${pLabel(futKeys[0], A.g)}</th><th class="nosort">${A.agg === "sum" ? `Сумма за ${H}` : "Конец горизонта"}</th><th class="nosort">${A.agg === "sum" ? `Факт за последние ${H}` : ""}</th><th class="nosort">Изменение</th></tr></thead><tbody>
+    ${rows.map(r => `<tr data-p="${r.p}"><td class="l pos">${esc(r.name)}</td><td class="num">${fmt(r.next)}</td><td class="num">${fmt(r.sumF)}</td><td class="num dim">${A.agg === "sum" ? fmt(r.last) : ""}</td><td>${A.agg === "sum" ? chip(pctCh(r.sumF, r.last)) : ""}</td></tr>`).join("")}</tbody></table></div>`));
+  $$("#fc-table tr[data-p]").forEach(r => r.onclick = () => { S.detailPos = +r.dataset.p; go("detail"); });
+  $("#fc-copy").onclick = () => copyText([["Позиция", pLabel(futKeys[0], A.g), "Прогноз за горизонт", "Факт за последние"], ...rows.map(r => [r.name, r.next, r.sumF, r.last])].map(r => r.map(v => isNum(v) ? String(Math.round(v)).replace(".", ",") : v).join("\t")).join("\n"));
+  bindPng(c);
+};
+
+/* ---------- Данные ---------- */
+let PENDING = null; // распознанный файл, ожидающий подтверждения
+VIEWS.data = c => {
+  c.insertAdjacentHTML("beforeend", pageHead("Данные", "Загрузите таблицу из Excel — программа сама поймёт, где позиции, где месяцы и где показатели."));
+  c.insertAdjacentHTML("beforeend", `<div class="drop" id="drop">
+      <svg viewBox="0 0 24 24" width="38" height="38" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>
+      <h3>Перетащите файл сюда</h3>
+      <p>Excel (.xlsx) или CSV. Или скопируйте таблицу в Excel и нажмите <b>Ctrl+V</b> (на Mac — <b>⌘V</b>) прямо на этой странице.</p>
+      <div class="drop-actions"><button class="btn primary" id="pick">Выбрать файл</button><button class="btn" id="demo1">Пример: продажи</button><button class="btn" id="demo2">Пример: бюджет затрат</button></div>
+    </div>`);
+  c.insertAdjacentHTML("beforeend", `<div id="pending"></div>`);
+  c.insertAdjacentHTML("beforeend", `<div class="grid g-2e">
+    ${cardHTML("fmt-help", "Какие таблицы подходят", "", "", `
+      <p style="margin:0 0 8px"><b>Вариант 1 — позиции × месяцы.</b> Как обычно в Excel:</p>
+      <div class="preview-wrap" style="max-height:none"><table class="preview"><tr><th>Позиция</th><th>Группа</th><th>янв 2025</th><th>фев 2025</th><th>мар 2025</th></tr><tr><td>Кофе 1 кг</td><td>Кофе</td><td>5 120</td><td>4 980</td><td>5 300</td></tr><tr><td>Чай 100 пак.</td><td>Чай</td><td>7 400</td><td>7 150</td><td>6 900</td></tr></table></div>
+      <p style="margin:12px 0 8px"><b>Вариант 2 — длинная таблица</b> (выгрузка из 1С, BI): строка = позиция + период, столбцы — показатели:</p>
+      <div class="preview-wrap" style="max-height:none"><table class="preview"><tr><th>Дата</th><th>Товар</th><th>Объём</th><th>Цена</th><th>Выручка</th></tr><tr><td>01.01.2025</td><td>Кофе 1 кг</td><td>5 120</td><td>1 590</td><td>8 140 800</td></tr><tr><td>01.02.2025</td><td>Кофе 1 кг</td><td>4 980</td><td>1 610</td><td>8 017 800</td></tr></table></div>
+      <p class="muted" style="margin:10px 0 0;font-size:12.5px">Периоды понимаются в любом виде: «янв 2025», «Январь 2025», «2025-01», «01.2025», «15.01.2025», «I кв 2025», «2025». Числа: «1 234,5», «12,5%», «(1 234)». Дни собираются в месяцы автоматически.</p>`)}
+    ${cardHTML("ds-now", "Сейчас загружено", "", "", dsSummary())}
+  </div>`);
+  c.insertAdjacentHTML("beforeend", cardHTML("ds-derived", "Расчётные показатели", "Добавьте свой показатель по формуле — например, маржа = [Выручка] − [Себестоимость] или средний чек = [Выручка] ÷ [Чеки]. Он появится во всех разделах.", "", derivedHTML()));
+  renderPending();
+  $("#pick").onclick = () => $("#file-input").click();
+  $("#demo1").onclick = () => { PENDING = null; setDS(demoSales()); go("overview"); };
+  $("#demo2").onclick = () => { PENDING = null; setDS(demoBudget()); go("overview"); };
+  const drop = $("#drop");
+  ["dragenter", "dragover"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", ev => { const f = ev.dataTransfer.files[0]; if (f) loadFile(f); });
+  bindDerived(c); bindDsTools(c);
+};
+function dsSummary() {
+  const m = allMetricNames().map(n => `<span class="tag">${esc(n)} · ${metricInfo(n).agg === "avg" ? "среднее" : "сумма"}</span>`).join(" ");
+  return `<div style="display:flex;flex-direction:column;gap:8px">
+    <div><b>${esc(DS.name)}</b>${DS.demo ? ' <span class="chip new">пример</span>' : ""}</div>
+    <div class="dim">${DS.positions.length} позиций${groups().length ? ` в ${groups().length} группах` : ""} · периоды: ${pLabel(DS.keys[0], DS.base)} — ${pLabel(DS.keys[DS.keys.length - 1], DS.base)} (${DS.keys.length}, шаг — ${GNAME[DS.base]})</div>
+    <div>${m}</div>
+    <p class="muted" style="margin:0;font-size:12.5px">«Сумма» — показатель складывается при переходе к кварталам и годам и по позициям (выручка, затраты, штуки). «Среднее» — усредняется (цены, доли, ставки). Щёлкните показатель, чтобы переключить.</p>
+    ${DS.bad && DS.bad.length ? `<div class="alert">Пропущены нечисловые значения: ${DS.bad.map(esc).join(", ")}${DS.bad.length >= 5 ? "…" : ""}</div>` : ""}
+    ${DS.dup ? `<div class="muted" style="font-size:12.5px">Повторяющихся строк сложено (или усреднено): ${DS.dup}</div>` : ""}
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" id="ds-export">Скачать данные (CSV)</button>${!DS.demo ? `<button class="btn sm" id="ds-forget">Удалить из памяти браузера</button>` : ""}</div>
+  </div>`;
+}
+function bindDsTools(c) {
+  $$("#ds-now .tag", c).forEach((t, i) => { t.style.cursor = "pointer"; t.title = "Переключить сумма/среднее"; t.onclick = () => { const n = allMetricNames()[i]; const m = metricInfo(n); m.agg = m.agg === "avg" ? "sum" : "avg"; clearCache(); saveDS(); render(); }; });
+  const ex = $("#ds-export"); if (ex) ex.onclick = () => {
+    const lines = [["Позиция", "Группа", "Период", ...allMetricNames()].join(";")];
+    DS.positions.forEach((p, i) => DS.keys.forEach((k, t) => { const vals = allMetricNames().map(m => baseSeries(m)[i * DS.keys.length + t]); if (vals.some(isNum)) lines.push([p.name, p.group, pLabel(k, DS.base), ...vals.map(v => isNum(v) ? String(v).replace(".", ",") : "")].map(s => /[;"]/.test(s) ? '"' + String(s).replace(/"/g, '""') + '"' : s).join(";")); }));
+    download(new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv" }), "данные_fiber_pulse.csv");
+  };
+  const fg = $("#ds-forget"); if (fg) fg.onclick = () => { store.del("ds"); setDS(demoSales()); toast("Данные удалены из памяти браузера, открыт пример"); };
+}
+function derivedHTML() {
+  const list = DS.derived.map((d, i) => `<div class="formula-row"><span class="tag">${esc(d.name)}</span><span class="mono" style="font-size:12.5px">= ${esc(d.formula)}</span><button class="btn ghost sm" data-deldv="${i}">Удалить</button></div>`).join("");
+  return `<div style="display:flex;flex-direction:column;gap:10px">${list}
+    <div class="formula-row"><input class="input" id="dv-name" placeholder="Название, напр. Маржа" style="width:200px"><b>=</b><input class="input" id="dv-formula" placeholder="[Выручка] − [Себестоимость]" style="flex:1;min-width:220px">
+    <select class="select" id="dv-agg"><option value="sum">складывать</option><option value="avg">усреднять</option></select><button class="btn primary sm" id="dv-add">Добавить</button></div>
+    <div class="formula-row">${allMetricNames().map(n => `<button class="metric-chip" data-dvins="[${esc(n)}]">${esc(n)}</button>`).join("")}${["×", "÷", "+", "−", "(", ")"].map(o => `<button class="metric-chip op-chip" data-dvins=" ${o} ">${o}</button>`).join("")}</div>
+    <div id="dv-msg"></div></div>`;
+}
+function bindDerived(c) {
+  $$("[data-dvins]", c).forEach(b => b.onclick = () => { const inp = $("#dv-formula"); const s = inp.selectionStart ?? inp.value.length; inp.value = inp.value.slice(0, s) + b.dataset.dvins + inp.value.slice(inp.selectionEnd ?? s); inp.focus(); });
+  $$("[data-deldv]", c).forEach(b => b.onclick = () => { DS.derived.splice(+b.dataset.deldv, 1); clearCache(); if (!allMetricNames().includes(S.metric)) S.metric = allMetricNames()[0]; saveDS(); render(); });
+  $("#dv-add").onclick = () => {
+    const name = $("#dv-name").value.trim(), formula = $("#dv-formula").value.trim();
+    try {
+      if (!name) throw new Error("Введите название показателя.");
+      if (allMetricNames().includes(name)) throw new Error("Показатель с таким названием уже есть.");
+      compileFormula(formula, allMetricNames());
+      DS.derived.push({ name, formula, agg: $("#dv-agg").value, _cache: null }); clearCache(); saveDS(); render(); toast(`Показатель «${name}» добавлен`);
+    } catch (e) { $("#dv-msg").innerHTML = `<div class="alert">${esc(e.message)}</div>`; }
+  };
+}
+async function loadFile(file) {
+  try {
+    toast("Читаю «" + file.name + "»…", 1500);
+    const wb = await readFileToGrid(file);
+    PENDING = { name: file.name.replace(/\.[^.]+$/, ""), sheets: wb.sheets, sheet: 0 };
+    prepPending();
+  } catch (e) { PENDING = { error: e.message }; }
+  if (S.view !== "data") go("data"); else renderPending();
+}
+function loadGrid(grid, name) { PENDING = { name, sheets: [{ name: "Вставка", grid }], sheet: 0 }; prepPending(); if (S.view !== "data") go("data"); else renderPending(); }
+function prepPending() {
+  const sh = PENDING.sheets[PENDING.sheet];
+  try { PENDING.layout = detectLayout(sh.grid); PENDING.error = null; } catch (e) { PENDING.layout = null; PENDING.error = e.message; }
+}
+function renderPending() {
+  const host = $("#pending"); if (!host) return;
+  if (!PENDING) { host.innerHTML = ""; return; }
+  if (PENDING.error && !PENDING.layout) { host.innerHTML = `<div class="alert"><b>Не получилось разобрать таблицу.</b> ${esc(PENDING.error)}</div>`; return; }
+  const L = PENDING.layout; const wide = L.roles.includes("pcol");
+  const roleOpts = (i) => {
+    const allowed = wide ? ["pos", "group", "metricName", "pcol", "skip"] : ["pos", "group", "metricName", "period", "value", "year", "month", "skip"];
+    return allowed.map(r => `<option value="${r}" ${L.roles[i] === r ? "selected" : ""}>${{ ...ROLE_NAMES, year: "Год", month: "Месяц" }[r]}</option>`).join("");
+  };
+  const nPer = L.roles.filter(r => r === "pcol").length;
+  const visCols = L.cols.filter(cc => !(wide && L.roles[cc.i] === "pcol"));
+  const metricNameInput = wide && !L.roles.includes("metricName");
+  host.innerHTML = cardHTML("pend", `Проверьте: «${esc(PENDING.name)}»`, wide ? `Распознано: <b>позиции в строках, ${nPer} периодов в столбцах</b> (${esc(L.header[L.roles.indexOf("pcol")])} … ${esc(L.header[L.roles.lastIndexOf("pcol")])})` : `Распознано: <b>длинная таблица</b> — строка = позиция + период`,
+    PENDING.sheets.length > 1 ? `<select class="select" id="pend-sheet">${PENDING.sheets.map((s, i) => `<option value="${i}" ${i === PENDING.sheet ? "selected" : ""}>Лист: ${esc(s.name)}</option>`).join("")}</select>` : "",
+    `<div style="display:flex;flex-direction:column;gap:12px">
+      <ol class="steps"><li>Проверьте роли столбцов</li><li>${metricNameInput ? "Назовите показатель" : "Проверьте показатели"}</li><li>Нажмите «Загрузить»</li></ol>
+      <div class="map-grid">${visCols.map(cc => `<div class="map-col"><span class="nm" title="${esc(cc.name)}">${esc(cc.name)}</span><span class="ex">${esc(cc.example || "—")}</span><select class="select" data-role="${cc.i}">${roleOpts(cc.i)}</select></div>`).join("")}</div>
+      ${metricNameInput ? `<div class="formula-row"><label for="pend-mname"><b>Что за числа в таблице?</b></label><input class="input" id="pend-mname" value="${esc(PENDING.mname || guessMetricName(PENDING.name))}" style="width:240px"><span class="muted" style="font-size:12.5px">например: Выручка, руб. · Затраты · Объём, шт.</span></div>` : ""}
+      <div class="preview-wrap"><table class="preview"><tr>${L.header.map(h => `<th>${esc(h)}</th>`).join("")}</tr>${L.rows.slice(0, 8).map(r => `<tr>${L.header.map((_, i) => `<td>${esc(cellText(r[i]))}</td>`).join("")}</tr>`).join("")}</table></div>
+      <div id="pend-msg"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" id="pend-ok">Загрузить данные</button><button class="btn" id="pend-cancel">Отмена</button><span class="muted" style="align-self:center;font-size:12.5px">${L.rows.length} строк</span></div>
+    </div>`);
+  $$("[data-role]", host).forEach(s => s.onchange = () => { L.roles[+s.dataset.role] = s.value; renderPending(); });
+  const sh = $("#pend-sheet"); if (sh) sh.onchange = () => { PENDING.sheet = +sh.value; prepPending(); renderPending(); };
+  const mn = $("#pend-mname"); if (mn) mn.oninput = () => PENDING.mname = mn.value;
+  $("#pend-cancel").onclick = () => { PENDING = null; renderPending(); };
+  $("#pend-ok").onclick = () => {
+    try {
+      if (!L.roles.includes("pos")) throw new Error("Выберите столбец с позициями (роль «Позиция»).");
+      const ds = buildDataset(L, { name: PENDING.name, metricName: (mn && mn.value.trim()) || "Значение" });
+      PENDING = null; setDS(ds); go("overview");
+      toast(`Загружено: ${ds.positions.length} позиций, ${ds.keys.length} периодов`);
+    } catch (e) { $("#pend-msg").innerHTML = `<div class="alert">${esc(e.message)}</div>`; }
+  };
+  host.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function guessMetricName(file) { return /затрат|расход|бюджет|cost|opex/i.test(file) ? "Затраты" : /выручк|продаж|sales|revenue/i.test(file) ? "Выручка" : "Значение"; }
+
+/* ---------------------------- события ---------------------------- */
+function bindGlobal() {
+  $$(".nav-btn").forEach(b => b.onclick = () => go(b.dataset.view));
+  $("#tb-metric").onchange = e => { S.metric = e.target.value; render(); };
+  $$("#tb-gran button").forEach(b => b.onclick = () => { if (b.disabled) return; const A0 = agg(S.metric, S.g); const k = A0.keys[S.t]; S.g = b.dataset.g; const A1 = agg(S.metric, S.g); const i = A1.keys.indexOf(gKey(k, S.g)); S.t = i >= 0 ? i : A1.keys.length - 1; S.customT = -1; render(); });
+  $("#tb-period").onchange = e => { S.t = +e.target.value; render(); };
+  $("#tb-prev").onclick = () => { if (S.t > 0) { S.t--; render(); } };
+  $("#tb-next").onclick = () => { const n = agg(S.metric, S.g).keys.length; if (S.t < n - 1) { S.t++; render(); } };
+  $$("#tb-cmp button").forEach(b => b.onclick = () => { S.cmp = b.dataset.c; render(); });
+  $("#tb-custom").onchange = e => { S.customT = +e.target.value; render(); };
+  $("#tb-group").onchange = e => { S.group = e.target.value; render(); };
+  $("#file-input").onchange = e => { const f = e.target.files[0]; if (f) loadFile(f); e.target.value = ""; };
+  document.addEventListener("dragover", e => e.preventDefault());
+  document.addEventListener("drop", e => { if (e.target.closest && e.target.closest("#drop")) return; e.preventDefault(); const f = e.dataTransfer && e.dataTransfer.files[0]; if (f) loadFile(f); });
+  document.addEventListener("paste", e => {
+    if (e.target.matches && e.target.matches("input, textarea")) return;
+    const text = e.clipboardData && e.clipboardData.getData("text/plain");
+    if (!text || !/\t/.test(text)) { if (text) toast("Скопируйте таблицу прямо из Excel — со столбцами"); return; }
+    e.preventDefault(); loadGrid(parseDelimited(text), "Таблица из буфера обмена");
+  });
+  document.addEventListener("keydown", e => {
+    if (e.target.matches("input, select, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "ArrowLeft") $("#tb-prev").click(); else if (e.key === "ArrowRight") $("#tb-next").click();
+  });
+  $$("[data-theme-set]").forEach(b => b.onclick = () => { setTheme(b.dataset.themeSet); });
+  // перерисовка только при изменении ширины (высота меняется от самой перерисовки)
+  let rt, lastW = 0;
+  new ResizeObserver(en => { const w = Math.round(en[0].contentRect.width); if (Math.abs(w - lastW) < 8) return; const first = !lastW; lastW = w; if (first) return;
+    clearTimeout(rt); rt = setTimeout(() => { if (DS && !document.activeElement.matches("input, select, textarea")) render(); }, 180); }).observe($("#content"));
+}
+function setTheme(t, initial) {
+  if (t === "auto") { if (!initial) document.documentElement.removeAttribute("data-theme"); } else document.documentElement.setAttribute("data-theme", t);
+  $$("[data-theme-set]").forEach(b => b.setAttribute("aria-pressed", b.dataset.themeSet === t));
+  store.set("theme", t); if (DS) render();
+}
+
+/* ---------------------------- запуск ---------------------------- */
+(function boot() {
+  refreshFonts();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { refreshFonts(); if (DS) render(); });
+  setTheme(store.get("theme", "auto"), true);
+  const st = store.get("state", null);
+  if (st) Object.assign(S, st, { factor: { ...S.factor, ...(st.factor || {}) } });
+  bindGlobal();
+  const saved = store.get("ds", null);
+  if (saved && saved.keys && saved.positions && saved.data) {
+    try { setDS({ ...saved, data: saved.data, derived: saved.derived || [] }, true); return; } catch (e) { store.del("ds"); }
+  }
+  setDS(demoSales());
+})();
+</script>
+</body>
+</html>
