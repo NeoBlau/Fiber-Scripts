@@ -766,7 +766,7 @@ function clearCache() { CACHE.clear(); if (DS) DS.derived.forEach(d => d._cache 
 const S = {
   view: "overview", metric: null, g: "M", t: -1, cmp: "yoy", customT: -1, group: "", detailPos: 0,
   tableSort: { col: "cur", dir: -1 }, tableSearch: "", tableMode: "flat", heatMode: "mom", heatSort: "total", heatNums: true,
-  factor: { formula: "", method: "shapley" }, fcH: 12, scen: {}, demo: true
+  factor: { formula: "", method: "chain", order: null, detPos: -1 }, fcH: 12, scen: {}, demo: true
 };
 function visiblePos() { const out = []; DS.positions.forEach((p, i) => { if (!S.group || p.group === S.group) out.push(i); }); return out; }
 function groups() { return Array.from(new Set(DS.positions.map(p => p.group).filter(Boolean))).sort((a, b) => a.localeCompare(b, "ru")); }
@@ -1073,38 +1073,307 @@ function insights(pair, mv, tot) {
 }
 
 /* --- факторный анализ --- */
-function factorDecompose(f, xa, xb, method) {
-  const k = f.vars.length, F = v => f.fn(v);
-  const ya = F(xa), yb = F(xb);
+/* --- факторный анализ: разбор формулы и 8 методов элиминирования --- */
+const FA_METHODS = {
+  chain: "Цепных подстановок", abs: "Абсолютных разниц", rel: "Относительных разниц", index: "Индексный",
+  integral: "Интегральный", log: "Логарифмический", shapley: "Шепли (взвешенных конечных разностей)", prop: "Пропорционального деления (долевого участия)"
+};
+const FA_SHORT = { chain: "Цепные подст.", abs: "Абс. разниц", rel: "Отн. разниц", index: "Индексный", integral: "Интегральный", log: "Логарифм.", shapley: "Шепли", prop: "Пропорц. деления" };
+const FA_HOW = {
+  chain: "Факторы по очереди заменяются с базисных значений (₀) на отчётные (₁). Влияние фактора — разница между соседними условными значениями результата: Y(a₁, b₀) − Y(a₀, b₀), Y(a₁, b₁) − Y(a₁, b₀)… Результат зависит от порядка подстановки.",
+  abs: "Тот же расчёт, что цепные подстановки, но через разницы: ΔY(a) = Δa × b₀ × c₀; ΔY(b) = a₁ × Δb × c₀; ΔY(c) = a₁ × b₁ × Δc. Для смешанных моделей — Δx, умноженное на остальную часть формулы.",
+  rel: "Для произведений факторов: ΔY(a) = Y₀ × Δa%; ΔY(b) = (Y₀ + ΔY(a)) × Δb%; ΔY(c) = (Y₀ + ΔY(a) + ΔY(b)) × Δc%. Удобен, когда известны только темпы прироста.",
+  index: "Через индексы Iₓ = x₁ / x₀: I(Y) = I(a) × I(b) × …; ΔY(a) = Y₀ × (I(a) − 1); ΔY(b) = Y₀ × I(a) × (I(b) − 1)… Для произведений и частных.",
+  integral: "Влияние фактора — интеграл частной производной вдоль пути от базы к отчёту. Для Y = a × b: ΔY(a) = Δa × b₀ + Δa × Δb / 2. Совместное влияние делится поровну, от порядка не зависит.",
+  log: "ΔY(a) = ΔY × ln I(a) / ln I(Y): изменение делится пропорционально логарифмам индексов. Для произведений и частных, без нулей и смены знака.",
+  shapley: "Среднее влияние фактора по всем возможным порядкам подстановки. Не зависит от порядка, не оставляет неразложимого остатка, применим к любой формуле.",
+  prop: "Для сумм внутри формулы (b + c): сначала считается влияние всей суммы, затем оно делится между слагаемыми пропорционально их изменениям Δb и Δc. Для аддитивной модели влияние = Δx."
+};
+const FA_NA = {
+  rel: "только для модели-произведения (Y = a × b × c) и ненулевых базисных значений",
+  index: "только для произведений и частных (Y = a × b / c) с ненулевыми базисными значениями",
+  log: "только для произведений и частных, без нулей и смены знака",
+  prop: "нужна сумма факторов внутри формулы, например (b + c)",
+  integral: "модель имеет разрыв на пути от базы к отчёту (деление на число, меняющее знак)"
+};
+const FA_TYPES = { additive: "аддитивная (сумма факторов)", multiplicative: "мультипликативная (произведение факторов)", multiple: "кратная (отношение)", mixed: "смешанная" };
+
+function parseModel(text, names) {
+  const s = String(text), toks = [];
+  for (let i = 0; i < s.length;) {
+    const c = s[i];
+    if (/\s/.test(c)) { i++; continue; }
+    if (c === "[") {
+      const j = s.indexOf("]", i); if (j < 0) throw new Error("Не закрыта скобка ] после названия показателя.");
+      const nm = s.slice(i + 1, j).trim(); if (!names.includes(nm)) throw new Error(`Нет показателя «${nm}». Нажмите на показатель ниже, чтобы вставить его.`);
+      toks.push({ t: "var", nm }); i = j + 1; continue;
+    }
+    if (/[0-9]/.test(c)) { let j = i; while (j < s.length && /[0-9.,]/.test(s[j])) j++; toks.push({ t: "num", v: parseFloat(s.slice(i, j).replace(",", ".")) }); i = j; continue; }
+    const op = { "×": "*", "·": "*", "*": "*", "÷": "/", "/": "/", ":": "/", "+": "+", "-": "-", "−": "-", "–": "-", "(": "(", ")": ")", "^": "^" }[c];
+    if (!op) throw new Error(`Непонятный символ «${c}» в формуле. Допустимы [показатели], числа и знаки + − × ÷ ( ) ^.`);
+    toks.push({ t: "op", v: op }); i++;
+  }
+  let pos = 0; const vars = [];
+  const eat = v => { const tk = toks[pos]; if (tk && tk.t === "op" && tk.v === v) { pos++; return true; } return false; };
+  const expr = () => { let a = term(); for (;;) { if (eat("+")) a = { t: "bin", op: "+", a, b: term() }; else if (eat("-")) a = { t: "bin", op: "-", a, b: term() }; else return a; } };
+  const term = () => { let a = power(); for (;;) { if (eat("*")) a = { t: "bin", op: "*", a, b: power() }; else if (eat("/")) a = { t: "bin", op: "/", a, b: power() }; else return a; } };
+  const power = () => { const a = unary(); return eat("^") ? { t: "bin", op: "^", a, b: power() } : a; };
+  const unary = () => eat("-") ? { t: "neg", a: unary() } : eat("+") ? unary() : primary();
+  const primary = () => {
+    const tk = toks[pos];
+    if (!tk) throw new Error("Формула обрывается — допишите её.");
+    if (tk.t === "num") { pos++; return { t: "num", v: tk.v }; }
+    if (tk.t === "var") { pos++; let k = vars.indexOf(tk.nm); if (k < 0) { vars.push(tk.nm); k = vars.length - 1; } return { t: "var", i: k }; }
+    if (eat("(")) { const e = expr(); if (!eat(")")) throw new Error("Не хватает закрывающей скобки )."); return e; }
+    throw new Error("Формула записана с ошибкой: проверьте знаки и скобки.");
+  };
+  const ast = expr();
+  if (pos < toks.length) throw new Error("Формула записана с ошибкой: лишний знак или скобка.");
+  if (!vars.length) throw new Error("В формуле нет ни одного показателя. Нажмите на название показателя, чтобы вставить его.");
+  const ev = (n, x) => {
+    if (n.t === "num") return n.v; if (n.t === "var") return x[n.i]; if (n.t === "neg") return -ev(n.a, x);
+    const a = ev(n.a, x), b = ev(n.b, x);
+    return n.op === "+" ? a + b : n.op === "-" ? a - b : n.op === "*" ? a * b : n.op === "/" ? a / b : Math.pow(a, b);
+  };
+  const hasVar = n => n.t === "var" || (!!n.a && hasVar(n.a)) || (!!n.b && hasVar(n.b));
+  const pp = n => {   // c · Π x^p
+    if (n.t === "num") return { c: n.v, p: {} };
+    if (n.t === "var") return { c: 1, p: { [n.i]: 1 } };
+    if (n.t === "neg") { const r = pp(n.a); return r && { c: -r.c, p: r.p }; }
+    if (n.op === "*" || n.op === "/") {
+      const a = pp(n.a), b = pp(n.b); if (!a || !b) return null;
+      const p = { ...a.p }, sg = n.op === "*" ? 1 : -1; for (const k in b.p) p[k] = (p[k] || 0) + sg * b.p[k];
+      return { c: n.op === "*" ? a.c * b.c : a.c / b.c, p };
+    }
+    if (n.op === "^" && !hasVar(n.b)) { const a = pp(n.a); if (!a) return null; const e = ev(n.b, []); const p = {}; for (const k in a.p) p[k] = a.p[k] * e; return { c: Math.pow(a.c, e), p }; }
+    return null;
+  };
+  const lin = n => {  // c0 + Σ k·x
+    if (n.t === "num") return { c0: n.v, co: {} };
+    if (n.t === "var") return { c0: 0, co: { [n.i]: 1 } };
+    const scale = (r, m) => { if (!r) return null; const co = {}; for (const k in r.co) co[k] = r.co[k] * m; return { c0: r.c0 * m, co }; };
+    if (n.t === "neg") return scale(lin(n.a), -1);
+    if (n.op === "+" || n.op === "-") {
+      const a = lin(n.a), b = lin(n.b); if (!a || !b) return null; const sg = n.op === "+" ? 1 : -1; const co = { ...a.co };
+      for (const k in b.co) co[k] = (co[k] || 0) + sg * b.co[k]; return { c0: a.c0 + sg * b.c0, co };
+    }
+    if (n.op === "*") { if (!hasVar(n.a)) return scale(lin(n.b), ev(n.a, [])); if (!hasVar(n.b)) return scale(lin(n.a), ev(n.b, [])); return null; }
+    if (n.op === "/" && !hasVar(n.b)) return scale(lin(n.a), 1 / ev(n.b, []));
+    return null;
+  };
+  const P = pp(ast);
+  const okPP = !!P && Object.keys(P.p).length === vars.length && vars.every((_, i) => Math.abs(P.p[i] || 0) > 1e-12);
+  const L = lin(ast);
+  const groups = [], used = new Set();
+  (function find(n) {
+    if (!n || n.t === "num" || n.t === "var") return;
+    if (n.t === "bin" && (n.op === "+" || n.op === "-")) {
+      const r = lin(n); const vs = r ? Object.keys(r.co).map(Number).filter(k => r.co[k] !== 0) : [];
+      if (r && vs.length >= 2) { if (!vs.some(v => used.has(v))) { groups.push({ vars: vs, co: r.co }); vs.forEach(v => used.add(v)); } return; }
+    }
+    if (n.a) find(n.a); if (n.b) find(n.b);
+  })(ast);
+  const ratio = n => n.t === "bin" && n.op === "/" ? { num: n.a, den: n.b } : n.t === "bin" && n.op === "*" ? (!hasVar(n.b) ? ratio(n.a) : !hasVar(n.a) ? ratio(n.b) : null) : null;
+  const rt = ratio(ast);
+  const type = L ? "additive" : okPP ? (Object.values(P.p).every(v => v > 0) ? "multiplicative" : "multiple") : rt && pp(rt.num) && lin(rt.den) ? "multiple" : "mixed";
+  const pureMult = okPP && Object.values(P.p).every(v => Math.abs(v - 1) < 1e-12);
+  const applicable = {
+    chain: true, abs: true, integral: true, shapley: vars.length <= 12,
+    rel: pureMult, index: okPP, log: okPP, prop: type === "additive" || groups.length > 0
+  };
+  return { vars, fn: x => ev(ast, x), ast, pp: okPP ? P : null, pureMult, lin: L, groups, type, applicable, text };
+}
+
+// Разложение по одной позиции: { ya, yb, eff[] } или null (метод неприменим к этим числам)
+function faMethod(M, m, xa, xb, ord) {
+  const F = M.fn, k = M.vars.length, ya = F(xa), yb = F(xb);
   if (!isNum(ya) || !isNum(yb)) return null;
   const eff = new Array(k).fill(0);
-  if (method === "chain") {
+  if (m === "chain" || m === "abs") {
     let cur = xa.slice(), prev = ya;
-    for (let i = 0; i < k; i++) { cur[i] = xb[i]; const y = F(cur); eff[i] = y - prev; prev = y; }
-  } else if (method === "integral") {
+    for (const i of ord) { cur[i] = xb[i]; const y = F(cur); eff[i] = y - prev; prev = y; }
+  } else if (m === "rel") {
+    if (!M.pureMult || xa.some(v => v === 0)) return null;
+    let acc = ya; for (const i of ord) { eff[i] = acc * (xb[i] - xa[i]) / xa[i]; acc += eff[i]; }
+  } else if (m === "index") {
+    if (!M.pp || xa.some(v => v === 0)) return null;
+    let cum = 1; for (const i of ord) { const ip = Math.pow(xb[i] / xa[i], M.pp.p[i]); if (!isNum(ip)) return null; eff[i] = ya * cum * (ip - 1); cum *= ip; }
+  } else if (m === "log") {
+    if (!M.pp) return null;
+    const I = xb.map((v, i) => v / xa[i]); if (I.some(v => !isNum(v) || !(v > 0))) return null;
+    const iy = yb / ya; if (!(iy > 0)) return null;
+    if (Math.abs(Math.log(iy)) < 1e-12) { if (!I.every(v => Math.abs(Math.log(v)) < 1e-12)) return null; }
+    else for (let i = 0; i < k; i++) eff[i] = (yb - ya) * M.pp.p[i] * Math.log(I[i]) / Math.log(iy);
+  } else if (m === "integral") {
     const nodes = [-0.9815606342, -0.9041172564, -0.7699026742, -0.5873179543, -0.3678314990, -0.1252334085, 0.1252334085, 0.3678314990, 0.5873179543, 0.7699026742, 0.9041172564, 0.9815606342];
     const wts = [0.0471753364, 0.1069393260, 0.1600783285, 0.2031674267, 0.2334925365, 0.2491470458, 0.2491470458, 0.2334925365, 0.2031674267, 0.1600783285, 0.1069393260, 0.0471753364];
     for (let q = 0; q < nodes.length; q++) {
-      const t = (nodes[q] + 1) / 2, w = wts[q] / 2;
-      const x = xa.map((v, i) => v + t * (xb[i] - v));
+      const t = (nodes[q] + 1) / 2, w = wts[q] / 2, x = xa.map((v, i) => v + t * (xb[i] - v));
       for (let i = 0; i < k; i++) {
-        const h = 1e-6 * Math.max(Math.abs(x[i]), 1); const xp = x.slice(), xm = x.slice(); xp[i] += h; xm[i] -= h;
-        const g = (F(xp) - F(xm)) / (2 * h); eff[i] += w * g * (xb[i] - xa[i]);
+        const h = 1e-6 * Math.max(Math.abs(x[i]), 1), xp = x.slice(), xm = x.slice(); xp[i] += h; xm[i] -= h;
+        eff[i] += w * (F(xp) - F(xm)) / (2 * h) * (xb[i] - xa[i]);
       }
     }
-    const s = eff.reduce((a, b) => a + b, 0);
-    if (!isNum(s) || Math.abs(s - (yb - ya)) > 1e-6 * Math.max(Math.abs(yb - ya), Math.abs(ya), 1)) return factorDecompose(f, xa, xb, "shapley");
-  } else { // Шепли: среднее по всем порядкам подстановки
+  } else if (m === "shapley") {
+    if (k > 12) return null;
     const n = 1 << k, vals = new Array(n);
-    for (let m = 0; m < n; m++) vals[m] = F(xa.map((v, i) => (m >> i) & 1 ? xb[i] : v));
+    for (let s = 0; s < n; s++) vals[s] = F(xa.map((v, i) => (s >> i) & 1 ? xb[i] : v));
     const fact = [1]; for (let i = 1; i <= k; i++) fact[i] = fact[i - 1] * i;
-    for (let i = 0; i < k; i++) for (let m = 0; m < n; m++) if (!((m >> i) & 1)) {
-      let s = 0; for (let j = 0; j < k; j++) if ((m >> j) & 1) s++;
-      eff[i] += fact[s] * fact[k - s - 1] / fact[k] * (vals[m | (1 << i)] - vals[m]);
+    for (let i = 0; i < k; i++) for (let s = 0; s < n; s++) if (!((s >> i) & 1)) {
+      let c = 0; for (let j = 0; j < k; j++) if ((s >> j) & 1) c++;
+      eff[i] += fact[c] * fact[k - c - 1] / fact[k] * (vals[s | (1 << i)] - vals[s]);
     }
-  }
+  } else if (m === "prop") {
+    let groups = M.groups;
+    if (M.type === "additive") groups = [{ vars: M.vars.map((_, i) => i), co: M.lin.co }];
+    if (!groups.length) return null;
+    const done = new Set(); let cur = xa.slice(), prev = ya;
+    for (const i of ord) {
+      if (done.has(i)) continue;
+      const g = groups.find(gg => gg.vars.includes(i)); const unit = g ? g.vars : [i];
+      unit.forEach(j => { cur[j] = xb[j]; done.add(j); });
+      const y = F(cur), ue = y - prev; prev = y;
+      if (!g) { eff[i] = ue; continue; }
+      const w = g.vars.map(j => (xb[j] - xa[j]) * (g.co[j] || 0)), sw = w.reduce((a, b) => a + b, 0);
+      if (Math.abs(sw) > 1e-12 * Math.max(...w.map(Math.abs), 1e-300)) g.vars.forEach((j, q) => eff[j] = ue * w[q] / sw);
+      else { // изменения слагаемых взаимно погасились: предел ΔY/ΔL = ∂Y/∂L
+        const j0 = g.vars.find(j => g.co[j]); const h = 1e-6 * Math.max(Math.abs(cur[j0]), 1);
+        const xp = cur.slice(), xm = cur.slice(); xp[j0] += h; xm[j0] -= h;
+        const dYdL = (F(xp) - F(xm)) / (2 * h) / g.co[j0];
+        g.vars.forEach((j, q) => eff[j] = dYdL * w[q]);
+      }
+    }
+  } else return null;
+  const sm = eff.reduce((a, b) => a + b, 0);
+  if (!isNum(sm) || Math.abs(sm - (yb - ya)) > 1e-6 * Math.max(Math.abs(yb - ya), Math.abs(ya), Math.abs(yb), 1)) return null;
   return { ya, yb, eff };
 }
+/* --- факторный анализ: устойчивость к порядку, чувствительность, выводы, графики --- */
+function faPerms(k) {
+  if (k <= 6) { // все перестановки
+    let P = [[0]];
+    for (let n = 1; n < k; n++) { const nx = []; for (const p of P) for (let pos = 0; pos <= p.length; pos++) nx.push([...p.slice(0, pos), n, ...p.slice(pos)]); P = nx; }
+    return { perms: P, full: true };
+  }
+  const R = rng(42), perms = [];   // иначе — 2000 случайных порядков
+  for (let s = 0; s < 2000; s++) { const a = [...Array(k).keys()]; for (let i = k - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } perms.push(a); }
+  return { perms, full: false };
+}
+// Влияние каждого фактора на итог при всех порядках подстановки (по таблице 2^k значений каждой позиции)
+function faOrderMatrix(M, perPos, ord) {
+  const k = M.vars.length; if (k < 2 || k > 12) return null;
+  const { perms, full } = faPerms(k);
+  const key = ord.join(","); if (!perms.some(p => p.join(",") === key)) perms.unshift(ord.slice());
+  const mat = perms.map(() => new Array(k).fill(0));
+  for (const r of perPos) {
+    const n = 1 << k, vals = new Array(n);
+    for (let s = 0; s < n; s++) vals[s] = M.fn(r.xa.map((v, i) => (s >> i) & 1 ? r.xb[i] : v));
+    if (vals.some(v => !isNum(v))) continue;
+    perms.forEach((p, q) => { let m = 0; for (const i of p) { mat[q][i] += vals[m | (1 << i)] - vals[m]; m |= 1 << i; } });
+  }
+  const chainRow = mat[perms.findIndex(p => p.join(",") === key)];
+  const stat = M.vars.map((v, i) => { const col = mat.map(r => r[i]); return { name: v, min: Math.min(...col), max: Math.max(...col), mean: col.reduce((a, b) => a + b, 0) / col.length, chain: chainRow[i], vals: col, flip: col.some(x => x > 0) && col.some(x => x < 0) }; });
+  return { stat, n: perms.length, full };
+}
+// Эластичности и сценарии ±p% для итога: каждый фактор меняется у всех позиций сразу (точка — базисный период)
+function faSensitivity(M, perPos, pct = 10) {
+  const tot = scale => perPos.reduce((s, r) => { const y = M.fn(r.xa.map((v, i) => v * (scale[i] ?? 1))); return isNum(y) ? s + y : s; }, 0);
+  const Y0 = tot([]);
+  return M.vars.map((v, i) => {
+    const sc = d => { const a = new Array(M.vars.length).fill(1); a[i] = 1 + d; return tot(a); };
+    const el = Y0 ? (sc(0.01) - sc(-0.01)) / 0.02 / Y0 : NaN;
+    return { name: v, el, lo: sc(-pct / 100) - Y0, hi: sc(pct / 100) - Y0 };
+  });
+}
+function faConclusions(M, eff, dY, Ya, Yb, la, lb, method, order, newE, goneE) {
+  const L = [], k = M.vars.length;
+  const dir = dY > 0 ? "вырос" : dY < 0 ? "снизился" : "не изменился";
+  L.push({ k: dY >= 0 ? "up" : "down", ico: dY >= 0 ? "▲" : "▼", html: `Результат ${dir} с <b>${fmtC(Ya)}</b> до <b>${fmtC(Yb)}</b> (${esc(la)} → ${esc(lb)}): на <b>${fmtS(dY)}</b> (${fmtP(pctCh(Yb, Ya))}). Метод: ${FA_METHODS[method].toLowerCase()}.` });
+  const items = M.vars.map((v, i) => ({ v, e: eff[i] }));
+  if (newE) items.push({ v: "Новые позиции", e: newE }); if (goneE) items.push({ v: "Выбывшие позиции", e: goneE });
+  const pos = items.filter(x => x.e > 0).sort((a, b) => b.e - a.e), neg = items.filter(x => x.e < 0).sort((a, b) => a.e - b.e);
+  const share = e => dY ? ` — ${e / dY < 0 ? "−" : ""}${nf(0).format(Math.abs(e / dY * 100))}% изменения` : "";
+  if (pos.length) L.push({ k: "up", ico: "↑", html: `Увеличили результат: ${pos.map(x => `<b>${esc(x.v)}</b> ${fmtS(x.e)}${share(x.e)}`).join("; ")}.` });
+  if (neg.length) L.push({ k: "down", ico: "↓", html: `Уменьшили результат: ${neg.map(x => `<b>${esc(x.v)}</b> ${fmtS(x.e)}${share(x.e)}`).join("; ")}.` });
+  const top = items.slice().sort((a, b) => Math.abs(b.e) - Math.abs(a.e))[0];
+  if (top) L.push({ k: "info", ico: "★", html: `Определяющий фактор — <b>${esc(top.v)}</b> (${fmtS(top.e)}).` });
+  if (order) {
+    const flips = order.stat.filter(s => s.flip), spread = Math.max(...order.stat.map(s => s.max - s.min));
+    if (flips.length) L.push({ k: "warn", ico: "!", html: `Знак влияния фактора ${flips.map(s => `<b>${esc(s.name)}</b>`).join(", ")} зависит от порядка подстановки. Опирайтесь на интегральный метод или Шепли.` });
+    else if (dY && spread / Math.abs(dY) > 0.05) L.push({ k: "warn", ico: "!", html: `Результаты цепных методов зависят от порядка подстановки (разброс до ${nf(0).format(spread / Math.abs(dY) * 100)}% изменения) — сверяйтесь с интегральным методом и Шепли.` });
+    else L.push({ k: "info", ico: "✓", html: `От порядка подстановки результат почти не зависит — выводы устойчивы.` });
+  }
+  L.push({ k: "info", ico: "=", html: `Проверка баланса: сумма влияний равна изменению результата.` });
+  return L;
+}
+function groupedBars(host, cats, series) {
+  host.innerHTML = ""; host.classList.add("chart");
+  const W = Math.max(300, host.clientWidth || 600), H = 280;
+  const all = series.flatMap(s => s.vals).filter(isNum); if (!all.length) return;
+  const ticks = niceTicks(Math.min(0, ...all), Math.max(0, ...all), 5); const mn = ticks[0], mx = ticks[ticks.length - 1];
+  const L = Math.max(...ticks.map(t => tw(fmtC(t), 10.5, true))) + 14, R = 8, T = 8;
+  const slot = (W - L - R) / cats.length, lblW = slot - 8;
+  const lines = cats.map(c => wrapText(c, lblW, 11, 2)); const B = 14 + 13 * Math.max(...lines.map(l => l.length));
+  const ih = H - T - B, y = v => T + ih - (v - mn) / (mx - mn) * ih;
+  const lg = document.createElement("div"); lg.className = "legend"; lg.innerHTML = series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join(""); host.appendChild(lg);
+  const svg = svgEl(W, H); host.appendChild(svg);
+  ticks.forEach(t => { add(svg, "line", { x1: L, x2: W - R, y1: y(t), y2: y(t), class: t === 0 ? "zero-l" : "grid-l" }); add(svg, "text", { x: L - 8, y: y(t) + 3.5, "text-anchor": "end", class: "axis-num" }, fmtC(t)); });
+  const bw = Math.max(2, Math.min(22, (slot - 10) / series.length - 2));
+  cats.forEach((c, ci) => {
+    const x0 = L + slot * ci + (slot - series.length * (bw + 2)) / 2;
+    series.forEach((s, si) => { const v = s.vals[ci]; if (!isNum(v)) return; const top = y(Math.max(0, v)), bot = y(Math.min(0, v));
+      const r = add(svg, "rect", { x: x0 + si * (bw + 2), y: top, width: bw, height: Math.max(1, bot - top), rx: 2, fill: s.color });
+      r.addEventListener("mousemove", ev => tip.show(`<div class="t-h">${esc(c)}</div><div class="t-r"><span><span class="sw" style="background:${s.color}"></span>${esc(s.name)}</span><b>${(v > 0 ? "+" : "") + fmt(v)}</b></div>`, ev.clientX, ev.clientY));
+      r.addEventListener("mouseleave", () => tip.hide()); });
+    lines[ci].forEach((ln, q) => add(svg, "text", { x: L + slot * (ci + 0.5), y: T + ih + 15 + q * 13, "text-anchor": "middle" }, ln));
+  });
+}
+function rangeChart(host, stat, n) {
+  host.innerHTML = ""; host.classList.add("chart");
+  const W = Math.max(300, host.clientWidth || 600), rowH = 40, H = stat.length * rowH + 40;
+  const lo = Math.min(0, ...stat.map(s => s.min)), hi = Math.max(0, ...stat.map(s => s.max));
+  const ticks = niceTicks(lo, hi, 5), mn = ticks[0], mx = ticks[ticks.length - 1];
+  const nameW = Math.min(Math.max(...stat.map(s => tw(s.name, 11, false, 500))) + 8, W * 0.3), L = nameW + 12, R = 14, iw = W - L - R;
+  const x = v => L + (v - mn) / (mx - mn) * iw;
+  const svg = svgEl(W, H); host.appendChild(svg);
+  ticks.forEach(t => { add(svg, "line", { x1: x(t), x2: x(t), y1: 4, y2: H - 22, class: t === 0 ? "zero-l" : "grid-l" }); add(svg, "text", { x: x(t), y: H - 6, "text-anchor": "middle", class: "axis-num" }, fmtC(t)); });
+  stat.forEach((s, i) => {
+    const cy = 8 + i * rowH + rowH / 2;
+    add(svg, "text", { x: nameW, y: cy + 4, "text-anchor": "end", class: "lbl-strong", style: "font-weight:500" }, fitText(s.name, nameW, 11, 500));
+    add(svg, "rect", { x: x(s.min), y: cy - 4, width: Math.max(2, x(s.max) - x(s.min)), height: 8, rx: 4, fill: "var(--surface-3)" });
+    const uniq = Array.from(new Set(s.vals.map(v => Math.round(v * 1e6) / 1e6))).slice(0, 400);
+    uniq.forEach((v, q) => add(svg, "circle", { cx: x(v), cy: cy + (((q * 0.618) % 1) - 0.5) * 10, r: 2.2, fill: "var(--s1)", opacity: 0.45 }));
+    add(svg, "rect", { x: x(s.mean) - 5, y: cy - 5, width: 10, height: 10, transform: `rotate(45 ${x(s.mean)} ${cy})`, fill: "var(--accent)", stroke: "var(--surface)", "stroke-width": 1.5 });
+    add(svg, "path", { d: `M${x(s.chain)},${cy - 9}l5,8h-10z`, fill: "var(--s4)", stroke: "var(--surface)", "stroke-width": 1 });
+    const hit = add(svg, "rect", { x: 0, y: cy - rowH / 2, width: W, height: rowH, fill: "transparent" });
+    hit.addEventListener("mousemove", ev => tip.show(`<div class="t-h">${esc(s.name)}</div><div class="t-r"><span>минимум</span><b>${fmtS(s.min)}</b></div><div class="t-r"><span>максимум</span><b>${fmtS(s.max)}</b></div><div class="t-r"><span>среднее (Шепли)</span><b>${fmtS(s.mean)}</b></div><div class="t-r"><span>выбранный порядок</span><b>${fmtS(s.chain)}</b></div>`, ev.clientX, ev.clientY));
+    hit.addEventListener("mouseleave", () => tip.hide());
+  });
+  const lg = document.createElement("div"); lg.className = "legend";
+  lg.innerHTML = `<span><i style="background:var(--s1);height:6px;width:6px;border-radius:50%"></i>отдельный порядок (${n}${n >= 2000 ? ", случайные" : ""})</span><span><i style="background:var(--accent);height:8px;width:8px;transform:rotate(45deg)"></i>среднее = Шепли</span><span><i style="background:var(--s4);height:8px;width:8px;clip-path:polygon(50% 0,100% 100%,0 100%)"></i>выбранный порядок</span>`;
+  host.prepend(lg);
+}
+function tornadoChart(host, sens, pct) {
+  host.innerHTML = ""; host.classList.add("chart");
+  const items = sens.slice().sort((a, b) => Math.abs(b.hi - b.lo) - Math.abs(a.hi - a.lo));
+  const W = Math.max(300, host.clientWidth || 600), rowH = 34, H = items.length * rowH + 30;
+  const ext = Math.max(...items.flatMap(s => [Math.abs(s.lo), Math.abs(s.hi)]), 1e-9);
+  const nameW = Math.min(Math.max(...items.map(s => tw(s.name, 11, false, 500))) + 8, W * 0.3);
+  const valW = Math.max(...items.flatMap(s => [tw(fmtS(s.lo), 10.5, true), tw(fmtS(s.hi), 10.5, true)])) + 8;
+  const L = nameW + 10 + valW, R = valW, iw = W - L - R, z = L + iw / 2, sc = iw / 2 / ext;
+  const svg = svgEl(W, H); host.appendChild(svg);
+  add(svg, "line", { x1: z, x2: z, y1: 2, y2: H - 22, class: "zero-l" });
+  items.forEach((s, i) => {
+    const cy = 6 + i * rowH + rowH / 2;
+    add(svg, "text", { x: nameW, y: cy + 4, "text-anchor": "end", class: "lbl-strong", style: "font-weight:500" }, fitText(s.name, nameW, 11, 500));
+    [[s.lo, "var(--down)"], [s.hi, "var(--up)"]].forEach(([v, col]) => {
+      const w = Math.abs(v) * sc; add(svg, "rect", { x: v >= 0 ? z : z - w, y: cy - 9, width: Math.max(1, w), height: 18, rx: 3, fill: col, opacity: 0.85 });
+      add(svg, "text", { x: v >= 0 ? z + w + 5 : z - w - 5, y: cy + 4, "text-anchor": v >= 0 ? "start" : "end", class: "axis-num" }, fmtS(v));
+    });
+  });
+  add(svg, "text", { x: z, y: H - 6, "text-anchor": "middle" }, `красный — фактор −${pct}%, синий — фактор +${pct}%`);
+}
+
 function suggestFormulas() {
   const names = DS.metrics.map(m => m.name), out = [];
   const sample = name => DS.data[name];
@@ -1526,57 +1795,174 @@ function bindDetailNav(P, p) {
 /* ---------- Факторы ---------- */
 VIEWS.factors = c => {
   const names = allMetricNames(); const sugg = suggestFormulas();
-  c.insertAdjacentHTML("beforeend", pageHead("Факторный анализ", `Почему изменился результат: раскладываем изменение на вклад каждого фактора. Сравнение: ${CMP_TXT[S.cmp]}.`));
-  c.insertAdjacentHTML("beforeend", cardHTML("fa-model", "Модель", "Результат = формула из показателей. Нажимайте на показатели и знаки — формула соберётся сама", "", `
+  if (!FA_METHODS[S.factor.method]) S.factor.method = "chain";
+  c.insertAdjacentHTML("beforeend", pageHead("Факторный анализ", `Почему изменился результат: изменение раскладывается на влияние каждого фактора восемью методами детерминированного факторного анализа. Сравнение: ${CMP_TXT[S.cmp]} (переключается сверху).`));
+  c.insertAdjacentHTML("beforeend", cardHTML("fa-model", "1. Модель", "Результат = формула из показателей. Нажимайте на показатели и знаки — формула соберётся сама", "", `
     <div style="display:flex;flex-direction:column;gap:10px">
       ${sugg.length ? `<div class="formula-row"><span class="muted">Нашёл в данных:</span>${sugg.slice(0, 2).map((s, i) => `<button class="btn sm" data-sug="${i}">[${esc(s.y)}] = ${esc(s.text)}</button>`).join("")}</div>` : ""}
       <div class="formula-row"><b>Результат =</b><input class="input" id="fa-formula" style="flex:1;min-width:240px" value="${esc(S.factor.formula)}" placeholder="например: [Объём] × [Цена]"></div>
       <div class="formula-row">${names.map(n => `<button class="metric-chip" data-ins="[${esc(n)}]">${esc(n)}</button>`).join("")}
         ${["×", "÷", "+", "−", "(", ")"].map(o => `<button class="metric-chip op-chip" data-ins=" ${o} ">${o}</button>`).join("")}<button class="btn ghost sm" id="fa-clear">Очистить</button></div>
-      <div class="formula-row"><span class="muted">Метод:</span><div class="seg">${[["shapley", "Шепли (без остатка)"], ["integral", "Интегральный"], ["chain", "Цепные подстановки"]].map(([k, l]) => `<button data-fm="${k}" aria-pressed="${S.factor.method === k}">${l}</button>`).join("")}</div>
-        <span class="muted" style="font-size:12px">Шепли и интегральный не зависят от порядка факторов; цепные подстановки — в порядке формулы</span></div>
+      <div id="fa-type"></div>
+      <div class="formula-row" id="fa-order"></div>
+      <div class="formula-row"><span class="muted">Основной метод (для графика и таблицы позиций):</span>
+        <select class="select" id="fa-method">${Object.entries(FA_METHODS).map(([k, l]) => `<option value="${k}" ${S.factor.method === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
       <div id="fa-msg"></div>
     </div>`));
-  c.insertAdjacentHTML("beforeend", `<div class="grid g-2e">${cardHTML("fa-wf", "Вклад факторов", "", pngBtn("fa-wf"))}${cardHTML("fa-pos", "Вклад позиций по факторам", "Крупнейшие изменения", "")}</div>`);
+  c.insertAdjacentHTML("beforeend", `<div class="grid g-2e">${cardHTML("fa-wf", "2. Влияние факторов", "&nbsp;", pngBtn("fa-wf"))}${cardHTML("fa-concl", "Выводы", "Составлены автоматически по основному методу", `<button class="btn sm" id="fa-report">Копировать отчёт</button>`, `<ul class="insights"></ul>`)}</div>`);
+  c.insertAdjacentHTML("beforeend", cardHTML("fa-cmp", "3. Сравнение всех методов", "Одна и та же разница результата, разложенная восемью методами. Строка «Проверка» — сумма влияний равна изменению результата", `<button class="btn sm" id="fa-cmp-copy">Копировать</button>`));
+  c.insertAdjacentHTML("beforeend", `<div class="grid g-2e">${cardHTML("fa-mchart", "Методы на графике", "Столбики одного фактора — разные методы", pngBtn("fa-mchart"))}${cardHTML("fa-pos", "Влияние по позициям", "Крупнейшие изменения. Щёлкните строку — подробный расчёт ниже", "")}</div>`);
+  c.insertAdjacentHTML("beforeend", `<div class="grid g-2e">${cardHTML("fa-ord", "4. Устойчивость к порядку подстановки", "Влияние каждого фактора при всех возможных порядках подстановки. Короткая полоса — выводы надёжны", pngBtn("fa-ord"))}${cardHTML("fa-sens", "5. Чувствительность", "Что будет с результатом, если фактор изменить у всех позиций сразу (от базисного периода)", pngBtn("fa-sens"))}</div>`);
+  c.insertAdjacentHTML("beforeend", cardHTML("fa-det", "6. Подробный расчёт по позиции", "Расчёт «как в учебнике»: исходные данные, условные показатели цепной подстановки и формулы каждого метода с числами", `<select class="select" id="fa-det-pos" style="max-width:340px"></select>`));
   $$("[data-ins]", c).forEach(b => b.onclick = () => { const inp = $("#fa-formula"); const s = inp.selectionStart ?? inp.value.length; inp.value = inp.value.slice(0, s) + b.dataset.ins + inp.value.slice(inp.selectionEnd ?? s); inp.focus(); S.factor.formula = inp.value; runFactors(); });
   $$("[data-sug]", c).forEach(b => b.onclick = () => { S.factor.formula = sugg[+b.dataset.sug].text; $("#fa-formula").value = S.factor.formula; runFactors(); });
-  $$("[data-fm]", c).forEach(b => b.onclick = () => { S.factor.method = b.dataset.fm; render(); });
+  $("#fa-method").onchange = e => { S.factor.method = e.target.value; runFactors(); };
   $("#fa-clear").onclick = () => { S.factor.formula = ""; $("#fa-formula").value = ""; runFactors(); };
-  $("#fa-formula").oninput = e => { S.factor.formula = e.target.value; clearTimeout(runFactors._t); runFactors._t = setTimeout(runFactors, 300); };
+  $("#fa-formula").oninput = e => { S.factor.formula = e.target.value; clearTimeout(runFactors._t); runFactors._t = setTimeout(runFactors, 350); };
   runFactors(); bindPng(c);
 };
+
 function runFactors() {
-  const msg = $("#fa-msg"), wf = $("#fa-wf .card-b"), tb = $("#fa-pos .card-b");
-  if (!S.factor.formula.trim()) { msg.innerHTML = `<div class="muted">Соберите формулу, например <b>[Объём] × [Цена]</b> — и увидите, сколько изменения дал объём, а сколько цена.</div>`; wf.innerHTML = tb.innerHTML = `<div class="empty">Ждём формулу</div>`; saveState(); return; }
-  let f; try { f = compileFormula(S.factor.formula, allMetricNames()); } catch (e) { msg.innerHTML = `<div class="alert">${esc(e.message)}</div>`; wf.innerHTML = tb.innerHTML = ""; return; }
+  const msg = $("#fa-msg"), wf = $("#fa-wf .card-b"), tb = $("#fa-pos .card-b"), cmp = $("#fa-cmp .card-b"), det = $("#fa-det .card-b");
+  const extraHosts = ["#fa-mchart .card-b", "#fa-ord .card-b", "#fa-sens .card-b"].map(q => $(q));
+  const clear = html => { wf.innerHTML = tb.innerHTML = cmp.innerHTML = det.innerHTML = html; extraHosts.forEach(h => h.innerHTML = html); $("#fa-concl .insights").innerHTML = ""; $("#fa-type").innerHTML = ""; $("#fa-order").innerHTML = ""; $("#fa-det-pos").innerHTML = ""; };
+  if (!S.factor.formula.trim()) { msg.innerHTML = `<div class="muted">Соберите формулу, например <b>[Объём] × [Цена]</b> — и увидите, сколько изменения дал объём, а сколько цена.</div>`; clear(`<div class="empty">Ждём формулу</div>`); saveState(); return; }
+  let M; try { M = parseModel(S.factor.formula, allMetricNames()); } catch (e) { msg.innerHTML = `<div class="alert">${esc(e.message)}</div>`; clear(""); return; }
   saveState();
-  // значения факторов в периодах A и B по позициям
-  const prs = f.vars.map(m => { const save = S.metric; S.metric = m; const pr = comparePair(m); S.metric = save; return pr; });
-  if (!prs[0].a) { msg.innerHTML = `<div class="alert">Для «${esc(prs[0].la)}» нет данных. Выберите другое сравнение сверху.</div>`; wf.innerHTML = tb.innerHTML = ""; return; }
-  const P = visiblePos(); const k = f.vars.length;
-  const eff = new Array(k).fill(0); let Ya = 0, Yb = 0, newE = 0, goneE = 0, skipped = 0; const perPos = [];
+  const k = M.vars.length;
+  // порядок подстановки
+  if (!Array.isArray(S.factor.order) || S.factor.order.length !== k || !S.factor.order.every(v => M.vars.includes(v))) S.factor.order = M.vars.slice();
+  const ord = S.factor.order.map(v => M.vars.indexOf(v));
+  $("#fa-type").innerHTML = `<span class="tag">Тип модели: ${FA_TYPES[M.type]}</span> <span class="muted" style="font-size:12.5px">Применимы: ${Object.keys(FA_METHODS).filter(m => M.applicable[m]).map(m => FA_SHORT[m]).join(", ")}</span>`;
+  $("#fa-order").innerHTML = `<span class="muted">Порядок подстановки:</span>${ord.map((i, q) => `<span class="metric-chip" style="cursor:default">${q + 1}. ${esc(M.vars[i])}${q > 0 ? ` <button class="btn ghost sm" data-up="${q}" title="Подставлять раньше" style="height:20px;padding:0 4px">←</button>` : ""}</span>`).join("")}<span class="muted" style="font-size:12px">важен для цепных подстановок, абсолютных и относительных разниц, индексного; правило — сначала количественные факторы, потом качественные</span>`;
+  $$("[data-up]").forEach(b => b.onclick = () => { const q = +b.dataset.up; const o = S.factor.order; [o[q - 1], o[q]] = [o[q], o[q - 1]]; runFactors(); });
+
+  const prs = M.vars.map(m => comparePair(m));
+  if (!prs[0].a) { msg.innerHTML = `<div class="alert">Для «${esc(prs[0].la)}» нет данных. Выберите другое сравнение сверху.</div>`; clear(""); return; }
+  const P = visiblePos(); const methods = Object.keys(FA_METHODS);
+  const R = {}; methods.forEach(m => R[m] = { eff: new Array(k).fill(0), fb: 0 });
+  let Ya = 0, Yb = 0, newE = 0, goneE = 0, skipped = 0; const perPos = [];
   for (const p of P) {
     const xa = prs.map(pr => pr.a[p]), xb = prs.map(pr => pr.b[p]);
     const okA = xa.every(isNum), okB = xb.every(isNum);
     if (!okA && !okB) continue;
-    if (okA && !okB) { const y = f.fn(xa); if (isNum(y)) { goneE -= y; Ya += y; } continue; }
-    if (!okA && okB) { const y = f.fn(xb); if (isNum(y)) { newE += y; Yb += y; } continue; }
-    const r = factorDecompose(f, xa, xb, S.factor.method);
-    if (!r) { skipped++; continue; }
-    Ya += r.ya; Yb += r.yb; r.eff.forEach((e, i) => eff[i] += e); perPos.push({ p, ...r, d: r.yb - r.ya });
+    if (okA && !okB) { const y = M.fn(xa); if (isNum(y)) { goneE -= y; Ya += y; } continue; }
+    if (!okA && okB) { const y = M.fn(xb); if (isNum(y)) { newE += y; Yb += y; } continue; }
+    const base = faMethod(M, "shapley", xa, xb, ord) || faMethod(M, "chain", xa, xb, ord);
+    if (!base) { skipped++; continue; }
+    Ya += base.ya; Yb += base.yb;
+    const per = {};
+    for (const m of methods) {
+      if (!M.applicable[m]) continue;
+      const r = m === "shapley" ? base : faMethod(M, m, xa, xb, ord);
+      if (!r) { R[m].fb++; base.eff.forEach((e, i) => R[m].eff[i] += e); per[m] = null; continue; }   // к этим числам метод неприменим
+      r.eff.forEach((e, i) => R[m].eff[i] += e); per[m] = r.eff;
+    }
+    perPos.push({ p, xa, xb, ya: base.ya, yb: base.yb, d: base.yb - base.ya, per });
   }
-  const resName = (() => { const m = S.factor.formula; const hit = suggestFormulas().find(s => s.text === m); return hit ? hit.y : "Результат"; })();
-  const lin = f.vars.length === 1;
-  msg.innerHTML = `<div class="okmsg">${esc(resName)}: <b>${fmtC(Ya)}</b> (${esc(prs[0].la)}) → <b>${fmtC(Yb)}</b> (${esc(prs[0].lb)}), изменение <b>${fmtS(Yb - Ya)}</b> (${fmtP(pctCh(Yb, Ya))}). Сумма вкладов сходится с изменением${skipped ? `; ${skipped} поз. пропущено (деление на ноль)` : ""}.${f.vars.some(v => metricInfo(v).agg === "avg") && S.g !== DS.base ? " Для цен на укрупнённом шаге берётся среднее за период." : ""}</div>`;
-  const steps = [{ name: prs[0].la, v: Ya, total: true }, ...f.vars.map((v, i) => ({ name: v, v: eff[i], tip: `<div class="t-r"><span>Доля в изменении</span><b>${Yb - Ya ? nf(0).format(eff[i] / (Yb - Ya) * 100) + "%" : "—"}</b></div>` }))];
+  const dY = Yb - Ya, main = M.applicable[S.factor.method] ? S.factor.method : "shapley";
+  const resName = (() => { const hit = suggestFormulas().find(s => s.text === S.factor.formula); return hit ? hit.y : "Результат"; })();
+  msg.innerHTML = `<div class="okmsg">${esc(resName)}: <b>${fmtC(Ya)}</b> (${esc(prs[0].la)}) → <b>${fmtC(Yb)}</b> (${esc(prs[0].lb)}), изменение <b>${fmtS(dY)}</b> (${fmtP(pctCh(Yb, Ya))}). Влияние посчитано по каждой позиции и сложено.${skipped ? ` ${skipped} поз. пропущено (деление на ноль).` : ""}${main !== S.factor.method ? ` Метод «${FA_METHODS[S.factor.method]}» к этой модели неприменим (${FA_NA[S.factor.method]}) — показан метод Шепли.` : ""}${M.vars.some(v => metricInfo(v).agg === "avg") && S.g !== DS.base ? " Для цен на укрупнённом шаге берётся среднее за период." : ""}</div>`;
+  // 2. каскадная диаграмма основного метода
+  $("#fa-wf .card-s").textContent = `Метод: ${FA_METHODS[main]}${R[main].fb ? ` (для ${R[main].fb} поз. метод неприменим к их числам — взят метод Шепли)` : ""}`;
+  const steps = [{ name: prs[0].la, v: Ya, total: true }, ...M.vars.map((v, i) => ({ name: v, v: R[main].eff[i], tip: `<div class="t-r"><span>Доля в изменении</span><b>${dY ? nf(0).format(R[main].eff[i] / dY * 100) + "%" : "—"}</b></div>` }))];
   if (newE) steps.push({ name: "Новые позиции", v: newE }); if (goneE) steps.push({ name: "Выбывшие позиции", v: goneE });
   steps.push({ name: prs[0].lb, v: Yb, total: true });
   waterfall(wf, steps, { height: 300 });
   // таблица позиций
   perPos.sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
-  const rows = perPos.slice(0, 40).map(r => `<tr data-p="${r.p}"><td class="l pos" title="${esc(DS.positions[r.p].name)}">${esc(DS.positions[r.p].name)}</td><td class="num">${fmtS(r.d)}</td>${r.eff.map(e => `<td class="num" style="color:${e >= 0 ? "var(--up)" : "var(--down)"}">${fmtS(e)}</td>`).join("")}</tr>`).join("");
-  tb.innerHTML = `<div class="tbl-wrap" style="max-height:330px"><table class="tbl"><thead><tr><th class="l pos nosort">Позиция</th><th class="nosort">Δ итог</th>${f.vars.map(v => `<th class="nosort">${esc(v)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
-  $$("tr[data-p]", tb).forEach(r => r.onclick = () => { S.detailPos = +r.dataset.p; go("detail"); });
+  tb.innerHTML = `<div class="tbl-wrap" style="max-height:330px"><table class="tbl"><thead><tr><th class="l pos nosort">Позиция</th><th class="nosort">Δ результата</th>${M.vars.map(v => `<th class="nosort">${esc(v)}</th>`).join("")}</tr></thead><tbody>${perPos.slice(0, 60).map(r => `<tr data-p="${r.p}"><td class="l pos" title="${esc(DS.positions[r.p].name)}">${esc(DS.positions[r.p].name)}</td><td class="num">${fmtS(r.d)}</td>${(r.per[main] || r.per.shapley || r.per.chain).map(e => `<td class="num" style="color:${e >= 0 ? "var(--up)" : "var(--down)"}">${fmtS(e)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  $$("tr[data-p]", tb).forEach(r => r.onclick = () => { S.factor.detPos = +r.dataset.p; renderFaDetail(M, ord, perPos, prs); $("#fa-det").scrollIntoView({ behavior: "smooth", block: "start" }); });
+  // 3. сравнение методов
+  const avail = methods.filter(m => M.applicable[m]), na = methods.filter(m => !M.applicable[m]);
+  const rowsF = M.vars.map((v, i) => `<tr style="cursor:default"><td class="l pos">${esc(v)}</td>${avail.map(m => `<td class="num" style="color:${R[m].eff[i] >= 0 ? "var(--up)" : "var(--down)"}${m === main ? ";font-weight:700" : ""}">${fmtS(R[m].eff[i])}</td>`).join("")}</tr>`).join("");
+  const extra = (newE ? `<tr style="cursor:default"><td class="l pos">Новые позиции</td>${avail.map(() => `<td class="num">${fmtS(newE)}</td>`).join("")}</tr>` : "") + (goneE ? `<tr style="cursor:default"><td class="l pos">Выбывшие позиции</td>${avail.map(() => `<td class="num">${fmtS(goneE)}</td>`).join("")}</tr>` : "");
+  const check = avail.map(m => { const s = R[m].eff.reduce((a, b) => a + b, 0) + newE + goneE; const ok = Math.abs(s - dY) <= 1e-6 * Math.max(Math.abs(dY), Math.abs(Ya), 1); return `<td class="num"><span class="chip ${ok ? "up" : "down"}">${ok ? "✓ сходится" : "✗ " + fmtS(dY - s)}</span></td>`; }).join("");
+  cmp.innerHTML = `<div class="tbl-wrap" style="max-height:none"><table class="tbl"><thead><tr><th class="l pos nosort">Фактор</th>${avail.map(m => `<th class="nosort" title="${esc(FA_METHODS[m])}" style="${m === main ? "color:var(--accent)" : ""}">${FA_SHORT[m]}</th>`).join("")}</tr></thead>
+    <tbody>${rowsF}${extra}<tr class="tot"><td class="l pos">Итого = ΔY</td>${avail.map(m => `<td class="num">${fmtS(R[m].eff.reduce((a, b) => a + b, 0) + newE + goneE)}</td>`).join("")}</tr>
+    <tr style="cursor:default"><td class="l pos">Проверка</td>${check}</tr></tbody></table></div>
+    ${avail.some(m => R[m].fb) ? `<p class="muted" style="font-size:12.5px;margin:8px 0 0">${avail.filter(m => R[m].fb).map(m => `${FA_SHORT[m]}: для ${R[m].fb} поз. метод неприменим к их значениям (нули, смена знака) — для них взят метод Шепли`).join("; ")}.</p>` : ""}
+    ${na.length ? `<p class="muted" style="font-size:12.5px;margin:6px 0 0">Не применимы к этой модели: ${na.map(m => `<b>${FA_SHORT[m]}</b> — ${FA_NA[m]}`).join("; ")}.</p>` : ""}
+    <details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">Как считает каждый метод</summary><ul style="margin:8px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:6px">${methods.map(m => `<li><b>${FA_METHODS[m]}.</b> ${FA_HOW[m]}</li>`).join("")}</ul>
+      <p class="muted" style="font-size:12.5px">Цепные подстановки, абсолютные и относительные разницы и индексный метод дают одинаковый результат, но зависят от порядка подстановки. Интегральный и Шепли от порядка не зависят — по ним удобно проверять выводы. Если методы сильно расходятся, значит велико совместное влияние факторов.</p></details>`;
+  $("#fa-cmp-copy").onclick = () => copyText([["Фактор", ...avail.map(m => FA_METHODS[m])], ...M.vars.map((v, i) => [v, ...avail.map(m => R[m].eff[i])]), ["Итого", ...avail.map(m => R[m].eff.reduce((a, b) => a + b, 0) + newE + goneE)]]
+    .map(r => r.map(v => isNum(v) ? String(Math.round(v * 100) / 100).replace(".", ",") : v).join("\t")).join("\n"));
+  // графики методов, устойчивость, чувствительность, выводы
+  groupedBars($("#fa-mchart .card-b"), M.vars, avail.map((m, si) => ({ name: FA_SHORT[m], color: scol(si), vals: R[m].eff })));
+  const orderRes = faOrderMatrix(M, perPos, ord);
+  if (orderRes) rangeChart($("#fa-ord .card-b"), orderRes.stat, orderRes.n); else $("#fa-ord .card-b").innerHTML = `<div class="empty">Нужно хотя бы 2 фактора.</div>`;
+  const sens = faSensitivity(M, perPos, 10);
+  const sh = $("#fa-sens .card-b");
+  sh.innerHTML = `<div class="formula-row" style="margin-bottom:6px"><span class="muted">Эластичность (на сколько % изменится результат при росте фактора на 1%):</span>${sens.map(x => `<span class="tag">${esc(x.name)}: <b class="mono">${isNum(x.el) ? (x.el > 0 ? "+" : "") + nf(3).format(x.el) : "—"}</b></span>`).join("")}</div><div id="fa-tornado"></div>`;
+  tornadoChart($("#fa-tornado"), sens, 10);
+  const concl = faConclusions(M, R[main].eff, dY, Ya, Yb, prs[0].la, prs[0].lb, main, orderRes, newE, goneE);
+  $("#fa-concl .insights").innerHTML = concl.map(x => `<li><span class="ins-ico ${x.k}">${x.ico}</span><span>${x.html}</span></li>`).join("");
+  $("#fa-report").onclick = () => {
+    const strip = h => h.replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+    const lines = [`ДЕТЕРМИНИРОВАННЫЙ ФАКТОРНЫЙ АНАЛИЗ`, `Модель: ${resName} = ${S.factor.formula} (${FA_TYPES[M.type]})`, `Сравнение: ${prs[0].la} → ${prs[0].lb}${S.group ? ", группа «" + S.group + "»" : ""}`, ``,
+      `ВЛИЯНИЕ ФАКТОРОВ ПО МЕТОДАМ`, ["Фактор", ...avail.map(m => FA_METHODS[m])].join("\t"),
+      ...M.vars.map((v, i) => [v, ...avail.map(m => fmt(R[m].eff[i]))].join("\t")),
+      ...(newE ? [["Новые позиции", ...avail.map(() => fmt(newE))].join("\t")] : []), ...(goneE ? [["Выбывшие позиции", ...avail.map(() => fmt(goneE))].join("\t")] : []),
+      ["Итого = ΔY", ...avail.map(m => fmt(R[m].eff.reduce((a, b) => a + b, 0) + newE + goneE))].join("\t"), ``,
+      `ВЫВОДЫ`, ...concl.map(x => "• " + strip(x.html)),
+      ...(orderRes ? [``, `УСТОЙЧИВОСТЬ К ПОРЯДКУ ПОДСТАНОВКИ (${orderRes.n} порядков)`, ...orderRes.stat.map(x => `${x.name}: от ${fmt(x.min)} до ${fmt(x.max)}, среднее ${fmt(x.mean)}`)] : []),
+      ``, `ЭЛАСТИЧНОСТИ И СЦЕНАРИИ ±10%`, ...sens.map(x => `${x.name}: эластичность ${isNum(x.el) ? nf(3).format(x.el) : "—"}; −10% → ${fmtS(x.lo)}; +10% → ${fmtS(x.hi)}`)];
+    copyText(lines.join("\n"));
+  };
+  bindPng($("#content"));
+  // 6. подробный расчёт
+  const sel = $("#fa-det-pos");
+  sel.innerHTML = perPos.map(r => `<option value="${r.p}">${esc(DS.positions[r.p].name)} (${fmtS(r.d)})</option>`).join("");
+  if (!perPos.some(r => r.p === S.factor.detPos)) S.factor.detPos = perPos.length ? perPos[0].p : -1;
+  sel.value = String(S.factor.detPos);
+  sel.onchange = () => { S.factor.detPos = +sel.value; renderFaDetail(M, ord, perPos, prs); };
+  renderFaDetail(M, ord, perPos, prs);
+}
+
+function renderFaDetail(M, ord, perPos, prs) {
+  const det = $("#fa-det .card-b"); const r = perPos.find(x => x.p === S.factor.detPos);
+  if (!r) { det.innerHTML = `<div class="empty">Нет позиций с данными в обоих периодах.</div>`; return; }
+  $("#fa-det-pos").value = String(r.p);
+  const V = M.vars, k = V.length, la = prs[0].la, lb = prs[0].lb;
+  const sub = (i, w) => `${esc(V[i])}${w ? "₁" : "₀"}`;
+  const n = v => fmt(v), sg = v => (v > 0 ? "+" : "") + fmt(v);
+  // исходные данные
+  let html = `<div class="tbl-wrap" style="max-height:none;border-top:0"><table class="tbl"><thead><tr><th class="l nosort">Показатель</th><th class="nosort">${esc(la)} (₀)</th><th class="nosort">${esc(lb)} (₁)</th><th class="nosort">Абс. изменение</th><th class="nosort">Темп прироста</th><th class="nosort">Индекс</th></tr></thead><tbody>
+    ${V.map((v, i) => `<tr style="cursor:default"><td class="l">${esc(v)}</td><td class="num">${n(r.xa[i])}</td><td class="num">${n(r.xb[i])}</td><td class="num">${sg(r.xb[i] - r.xa[i])}</td><td>${chip(pctCh(r.xb[i], r.xa[i]))}</td><td class="num">${r.xa[i] ? nf(4, 4).format(r.xb[i] / r.xa[i]) : "—"}</td></tr>`).join("")}
+    <tr class="grp"><td class="l">Результат (по формуле)</td><td class="num">${n(r.ya)}</td><td class="num">${n(r.yb)}</td><td class="num">${sg(r.d)}</td><td>${chip(pctCh(r.yb, r.ya))}</td><td class="num">${r.ya ? nf(4, 4).format(r.yb / r.ya) : "—"}</td></tr></tbody></table></div>`;
+  // цепные подстановки
+  let cur = r.xa.slice(), prev = r.ya; const done = [];
+  let chainRows = `<tr style="cursor:default"><td class="l">Y₀ (базисный)</td><td class="l mono" style="font-size:12px">${V.map((_, i) => sub(i, 0)).join(", ")}</td><td class="num">${n(r.ya)}</td><td></td></tr>`;
+  ord.forEach((i, q) => { cur[i] = r.xb[i]; done.push(i); const y = M.fn(cur);
+    chainRows += `<tr style="cursor:default"><td class="l">${q === k - 1 ? "Y₁ (отчётный)" : `Y усл.${q + 1}`}</td><td class="l mono" style="font-size:12px">${V.map((_, j) => sub(j, done.includes(j))).join(", ")}</td><td class="num">${n(y)}</td><td class="num" style="color:${y - prev >= 0 ? "var(--up)" : "var(--down)"}">ΔY(${esc(V[i])}) = ${sg(y - prev)}</td></tr>`; prev = y; });
+  html += `<h4 style="margin:16px 0 6px">Цепные подстановки: условные показатели</h4><div class="tbl-wrap" style="max-height:none;border-top:0"><table class="tbl"><thead><tr><th class="l nosort">Показатель</th><th class="l nosort">Значения факторов</th><th class="nosort">Значение</th><th class="nosort">Влияние</th></tr></thead><tbody>${chainRows}</tbody></table></div>`;
+  // формулы методов с числами
+  const lines = [];
+  if (M.pureMult) {
+    const c = M.pp.c, cs = c !== 1 ? fmt(c) + " × " : "";
+    ord.forEach((i, q) => { const before = ord.slice(0, q), after = ord.slice(q + 1);
+      const sym = cs + [...before.map(j => sub(j, 1)), "Δ" + esc(V[i]), ...after.map(j => sub(j, 0))].join(" × ");
+      const num = cs + [...before.map(j => n(r.xb[j])), "(" + sg(r.xb[i] - r.xa[i]) + ")", ...after.map(j => n(r.xa[j]))].join(" × ");
+      lines.push(["abs", `ΔY(${esc(V[i])}) = ${sym} = ${num} = <b>${sg(r.per.abs[i])}</b>`]); });
+    if (r.per.rel) { let acc = r.ya; ord.forEach(i => { const pc = (r.xb[i] - r.xa[i]) / r.xa[i] * 100;
+      lines.push(["rel", `ΔY(${esc(V[i])}) = ${n(acc)} × ${nf(3).format(pc)}% / 100 = <b>${sg(acc * pc / 100)}</b>`]); acc += acc * pc / 100; }); }
+  } else ord.forEach(i => lines.push(["abs", `ΔY(${esc(V[i])}) = Y(…, ${sub(i, 1)}, …) − Y(…, ${sub(i, 0)}, …) = <b>${sg(r.per.abs[i])}</b> (совпадает с цепными подстановками)`]));
+  if (M.pp && r.per.index) { let cum = 1; ord.forEach(i => { const ip = Math.pow(r.xb[i] / r.xa[i], M.pp.p[i]);
+    lines.push(["index", `ΔY(${esc(V[i])}) = Y₀ × ${cum === 1 ? "" : nf(4, 4).format(cum) + " × "}(I${M.pp.p[i] !== 1 ? "^" + fmt(M.pp.p[i]) : ""} − 1) = ${n(r.ya)} × ${cum === 1 ? "" : nf(4, 4).format(cum) + " × "}(${nf(4, 4).format(ip)} − 1) = <b>${sg(r.per.index[i])}</b>`]); cum *= ip; }); }
+  if (M.pp && r.per.log && r.ya && r.yb / r.ya > 0) { const ly = Math.log(r.yb / r.ya); if (Math.abs(ly) > 1e-12) V.forEach((v, i) =>
+    lines.push(["log", `ΔY(${esc(v)}) = ΔY × ${M.pp.p[i] !== 1 ? fmt(M.pp.p[i]) + " × " : ""}ln I(${esc(v)}) / ln I(Y) = ${sg(r.d)} × ${M.pp.p[i] !== 1 ? fmt(M.pp.p[i]) + " × " : ""}${nf(5).format(Math.log(r.xb[i] / r.xa[i]))} / ${nf(5).format(ly)} = <b>${sg(r.per.log[i])}</b>`])); }
+  if (k === 2 && M.pureMult && r.per.integral) {
+    const [a0, b0] = r.xa, da = r.xb[0] - r.xa[0], db = r.xb[1] - r.xa[1], c = M.pp.c, cs = c !== 1 ? fmt(c) + " × " : "";
+    lines.push(["integral", `ΔY(${esc(V[0])}) = ${cs}(Δ${esc(V[0])} × ${sub(1, 0)} + Δ${esc(V[0])} × Δ${esc(V[1])} / 2) = ${cs}(${sg(da)} × ${n(b0)} + ${sg(da)} × ${sg(db)} / 2) = <b>${sg(r.per.integral[0])}</b>`]);
+    lines.push(["integral", `ΔY(${esc(V[1])}) = ${cs}(Δ${esc(V[1])} × ${sub(0, 0)} + Δ${esc(V[0])} × Δ${esc(V[1])} / 2) = ${cs}(${sg(db)} × ${n(a0)} + ${sg(da)} × ${sg(db)} / 2) = <b>${sg(r.per.integral[1])}</b>`]);
+  } else if (r.per.integral) V.forEach((v, i) => lines.push(["integral", `ΔY(${esc(v)}) = ∫ ∂Y/∂${esc(v)} d${esc(v)} по пути от базы к отчёту = <b>${sg(r.per.integral[i])}</b>`]));
+  if (r.per.shapley) V.forEach((v, i) => lines.push(["shapley", `ΔY(${esc(v)}) = среднее по ${k === 1 ? 1 : [...Array(k).keys()].reduce((a, j) => a * (j + 1), 1)} порядкам подстановки = <b>${sg(r.per.shapley[i])}</b>`]));
+  if (r.per.prop) V.forEach((v, i) => lines.push(["prop", `ΔY(${esc(v)}) = <b>${sg(r.per.prop[i])}</b>`]));
+  Object.keys(FA_METHODS).forEach(m => { if (M.applicable[m] && r.per[m] === null) lines.push([m, `<span class="muted">к значениям этой позиции метод неприменим (${FA_NA[m] || "нули или смена знака"})</span>`]); });
+  const byM = Object.keys(FA_METHODS).filter(m => lines.some(l => l[0] === m));
+  html += `<h4 style="margin:16px 0 6px">Расчёт каждым методом</h4><div style="display:flex;flex-direction:column;gap:10px">${byM.map(m => `<div><div style="font-weight:600">${FA_METHODS[m]}</div><div class="mono" style="font-size:12.5px;line-height:1.7;overflow-x:auto">${lines.filter(l => l[0] === m).map(l => l[1]).join("<br>")}</div></div>`).join("")}</div>
+    <p class="muted" style="font-size:12.5px;margin:10px 0 0">₀ — значение в «${esc(la)}», ₁ — в «${esc(lb)}», Δ — изменение, I — индекс (отношение ₁ к ₀).</p>`;
+  det.innerHTML = html;
 }
 
 /* ---------- Прогноз и сценарии ---------- */
