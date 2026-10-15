@@ -1,7 +1,10 @@
 """Листинг исходного текста (один или несколько файлов подряд) для депонирования в Роспатенте:
 первые 10 и последние 10 страниц, сквозная нумерация. Результат — PDF (Chromium)."""
 import html, sys, asyncio
-OUT, TITLE, SRCS = sys.argv[1], sys.argv[2], sys.argv[3:]
+args = sys.argv[1:]
+FULL = '--full' in args
+args = [a for a in args if a != '--full']
+OUT, TITLE, SRCS = args[0], args[1], args[2:]
 COLS, ROWS = 100, 58
 lines = []
 text = ''
@@ -15,7 +18,7 @@ for raw in text.replace('\t', '    ').split('\n'):
     lines.append(raw)
 pages = [lines[i:i + ROWS] for i in range(0, len(lines), ROWS)]
 N = len(pages)
-pick = list(range(N)) if N <= 20 else list(range(10)) + list(range(N - 10, N))
+pick = list(range(N)) if FULL or N <= 20 else list(range(10)) + list(range(N - 10, N))
 out = ['<meta charset=utf-8><style>@page{size:A4;margin:14mm 12mm 14mm 16mm}body{margin:0}'
        '.p{page-break-after:always;font:8.6pt/1.22 "DejaVu Sans Mono",monospace}.p:last-child{page-break-after:auto}'
        '.h{font:9pt "DejaVu Sans",sans-serif;border-bottom:1px solid #000;padding-bottom:3px;margin-bottom:6px;display:flex;justify-content:space-between}'
